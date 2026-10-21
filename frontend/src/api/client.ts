@@ -83,13 +83,13 @@ export const qs = (params: Record<string, string | number | undefined | null>) =
   ).toString();
 
 export interface ParamSpec {
-  name: string; label: string; type: "int" | "float" | "bool"; default: number | boolean;
+  name: string; label: string; type: "int" | "float" | "bool" | "rules"; default: any;
   min: number | null; max: number | null; step: number | null; help: string;
 }
 export interface StrategyInfo { key: string; label: string; description: string; params: ParamSpec[] }
 export interface StrategyConfig {
   id: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
-  params: Record<string, number | boolean>; enabled: boolean; last_target: string | null;
+  params: Record<string, any>; enabled: boolean; last_target: string | null;
   last_bar_time: number | null; last_run_at: string | null; last_error: string | null;
 }
 export interface BacktestTrade {
@@ -97,7 +97,7 @@ export interface BacktestTrade {
   pnl: number; fees: number; net: number;
 }
 export interface BacktestResult {
-  symbol: string; params: Record<string, number | boolean>; candles: (Candle & { volume: number })[];
+  symbol: string; params: Record<string, any>; candles: (Candle & { volume: number })[];
   trades: BacktestTrade[]; equity: { time: number; value: number }[];
   stats: {
     start_equity: number; final_equity: number; total_return: number; max_drawdown: number; trades: number;

@@ -165,3 +165,17 @@ label.field small { color: var(--text-3); }
 .error-text { color: var(--down-text); font-size: 13px; }
 .banner { padding: 8px 12px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; background: color-mix(in srgb, var(--warn) 18%, var(--surface)); }
 .empty { color: var(--text-3); padding: 24px; text-align: center; }
+
+/* ---------- rule builder ---------- */
+.rb { display: grid; gap: 12px; margin-top: 8px; }
+.rb-group { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; background: var(--surface); }
+.rb-group-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 13px; }
+.rb-group-head .muted { font-size: 12px; }
+.rb-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px; border-radius: 6px; background: var(--surface-2); }
+.rb-operand { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.rb-operand select, .rb-cmp, .rb-num input { padding: 4px 6px; font-size: 13px; }
+.rb-cmp { font-weight: 600; }
+.rb-num { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--text-2); }
+.rb-join { font-size: 12px; font-weight: 600; color: var(--accent); min-width: 16px; }
+.rb-empty { font-size: 12px; }
+.rb-group > .btn { justify-self: start; }

@@ -1,0 +1,92 @@
+import math
+
+import pytest
+
+from app.strategies import Candle, build_strategy
+from app.strategies.indicators import ema
+from app.strategies.rules import compute
+
+V = lambda v: {"kind": "value", "value": v}  # noqa: E731
+CLOSE = {"kind": "price", "field": "close"}
+
+
+def cs(closes, highs=None, lows=None):
+    highs = highs or closes
+    lows = lows or closes
+    return [Candle(i * 3600, c, h, l, c, 1.0) for i, (c, h, l) in enumerate(zip(closes, highs, lows))]
+
+
+def rules(long_entry=(), long_exit=(), short_entry=(), short_exit=(), sl=0, tp=0, logic="and"):
+    g = lambda conds: {"logic": logic, "conditions": list(conds)}  # noqa: E731
+    return {"rules": {"long_entry": g(long_entry), "long_exit": g(long_exit), "short_entry": g(short_entry),
+                      "short_exit": g(short_exit), "stop_loss_pct": sl, "take_profit_pct": tp}}
+
+
+def cond(left, cmp, right):
+    return {"left": left, "cmp": cmp, "right": right}
+
+
+def test_compute_channel_excludes_current_bar():
+    c = cs([1, 5, 2, 3, 9], highs=[1, 5, 2, 3, 9], lows=[1, 5, 2, 3, 9])
+    assert compute({"kind": "highest", "length": 2}, c, {}) == [None, None, 5, 5, 3]
+    assert compute({"kind": "lowest", "length": 2}, c, {}) == [None, None, 1, 2, 2]
+
+
+def test_compute_bollinger_and_macd():
+    closes = [float(x) for x in [2, 4, 4, 4, 5, 5, 7, 9]]
+    c = cs(closes)
+    mid = compute({"kind": "bb_middle", "length": 8, "mult": 2}, c, {})
+    up = compute({"kind": "bb_upper", "length": 8, "mult": 2}, c, {})
+    assert mid[-1] == pytest.approx(5) and up[-1] == pytest.approx(5 + 2 * 2)  # 母體標準差 = 2
+    closes = [100 + math.sin(i / 5) * 10 for i in range(80)]
+    c = cs(closes)
+    line = compute({"kind": "macd", "fast": 12, "slow": 26, "signal": 9}, c, {})
+    f, s = ema(closes, 12), ema(closes, 26)
+    assert line[40] == pytest.approx(f[40] - s[40])
+    hist = compute({"kind": "macd_hist", "fast": 12, "slow": 26, "signal": 9}, c, {})
+    sig = compute({"kind": "macd_signal", "fast": 12, "slow": 26, "signal": 9}, c, {})
+    assert line[24] is None and line[25] is not None  # 慢線 26 → 第 25 根開始有值
+    assert sig[32] is None and sig[33] is not None  # 訊號線再晚 9 - 1 根 and hist[50] == pytest.approx(line[50] - sig[50])
+
+
+def test_and_or_entry_exit():
+    c = cs([10, 20, 30, 40, 50, 40, 30])
+    s = build_strategy("rules", rules(long_entry=[cond(CLOSE, ">=", V(30))], long_exit=[cond(CLOSE, "<", V(35))]))
+    assert s.targets(c) == ["flat", "flat", "long", "long", "long", "long", "flat"]
+    both = rules(long_entry=[cond(CLOSE, ">", V(25)), cond(CLOSE, "<", V(45))])
+    assert build_strategy("rules", both).targets(c)[2] == "long"
+    either = rules(long_entry=[cond(CLOSE, ">", V(45)), cond(CLOSE, "<", V(15))], logic="or")
+    assert build_strategy("rules", either).targets(c)[:2] == ["long", "long"]
+
+
+def test_crosses_and_reversal():
+    c = cs([10, 20, 10, 20, 10])
+    s = build_strategy("rules", rules(
+        long_entry=[cond(CLOSE, "crosses_above", V(15))],
+        short_entry=[cond(CLOSE, "crosses_below", V(15))],
+    ))
+    assert s.targets(c) == ["flat", "long", "short", "long", "short"]
+
+
+def test_stop_loss_and_take_profit():
+    up = rules(long_entry=[cond(CLOSE, "crosses_above", V(100))], sl=5, tp=10)
+    s = build_strategy("rules", up)
+    assert s.targets(cs([99, 101, 97, 95.9]))[-1] == "flat"  # 101 × 0.95 = 95.95
+    assert s.targets(cs([99, 101, 105, 111.2])) == ["flat", "long", "long", "flat"]
+
+
+def test_rules_are_causal():
+    closes = [100 + math.sin(i / 4) * 10 + i * 0.05 for i in range(400)]
+    s = build_strategy("rules")  # 預設範例：RSI + EMA200
+    assert s.targets(cs(closes))[:300] == s.targets(cs(closes[:300]))
+
+
+def test_validation_messages():
+    with pytest.raises(ValueError, match="至少要有一個"):
+        build_strategy("rules", rules())
+    with pytest.raises(ValueError, match="MACD"):
+        build_strategy("rules", rules(long_entry=[cond({"kind": "macd", "fast": 30, "slow": 20, "signal": 9}, ">", V(0))]))
+    with pytest.raises(ValueError):
+        build_strategy("rules", rules(long_entry=[cond({"kind": "eval", "code": "1"}, ">", V(0))]))
+    with pytest.raises(ValueError):
+        build_strategy("rules", rules(long_entry=[cond(CLOSE, ">", V(1))] * 11))

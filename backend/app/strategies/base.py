@@ -32,7 +32,7 @@ class Candle:
 class Param:
     name: str
     label: str
-    type: Literal["int", "float", "bool"]
+    type: Literal["int", "float", "bool", "rules"]  # rules = 條件組合器的 JSON 規則
     default: Any
     min: float | None = None
     max: float | None = None
@@ -40,6 +40,10 @@ class Param:
     help: str = ""
 
     def cast(self, value: Any) -> Any:
+        if self.type == "rules":
+            from .rules import parse_rules
+
+            return parse_rules(value)
         if self.type == "bool":
             if isinstance(value, str):
                 return value.strip().lower() in ("1", "true", "yes", "on")

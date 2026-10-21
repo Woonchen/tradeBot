@@ -4,6 +4,7 @@ import {
   api, type BacktestResult, type BotSettings, type Market, type ParamSpec, type StrategyConfig, type StrategyInfo,
 } from "../api/client";
 import { BacktestChart } from "../components/BacktestChart";
+import { RuleBuilder, rulesForMarket, type Rules } from "../components/RuleBuilder";
 import { EquityChart } from "../components/EquityChart";
 import { fmtNum, fmtPct, fmtPrice, fmtSigned, fmtTime, pnlClass } from "../format";
 
@@ -13,10 +14,17 @@ const TARGET_ZH: Record<string, string> = { long: "▲ 多", short: "▼ 空", f
 
 type Draft = {
   id?: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
-  params: Record<string, number | boolean>; enabled: boolean;
+  params: Record<string, any>; enabled: boolean;
 };
 
-const defaults = (info: StrategyInfo) => Object.fromEntries(info.params.map((p) => [p.name, p.default]));
+const autoName = (symbol: string, label: string, interval: string) => `${symbol.replace(/USDT$/, "")} ${label.split(/[（ ]/)[0]} ${interval}`;
+
+const defaults = (info: StrategyInfo) => Object.fromEntries(info.params.map((p) => [p.name, structuredClone(p.default)]));
+
+/** 送出前的整理：條件組合器在現貨時清掉做空條件。 */
+const cleanParams = (info: StrategyInfo, params: Record<string, any>, market: Market) =>
+  Object.fromEntries(Object.entries(params).map(([k, v]) =>
+    [k, info.params.find((p) => p.name === k)?.type === "rules" ? rulesForMarket(v as Rules, market) : v]));
 
 function ParamField({ spec, value, onChange }: { spec: ParamSpec; value: number | boolean; onChange: (v: number | boolean) => void }) {
   if (spec.type === "bool") {
@@ -100,13 +108,13 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
   const backtest = useMutation({
     mutationFn: () => api<BacktestResult>("/api/strategies/backtest", {
       method: "POST",
-      body: JSON.stringify({ strategy: d.strategy, symbol: d.symbol, market: d.market, interval: d.interval, params: d.params, bars }),
+      body: JSON.stringify({ strategy: d.strategy, symbol: d.symbol, market: d.market, interval: d.interval, params: cleanParams(info, d.params, d.market), bars }),
     }),
   });
   const save = useMutation({
     mutationFn: (enabled: boolean) => api(d.id ? `/api/strategies/${d.id}` : "/api/strategies", {
       method: d.id ? "PUT" : "POST",
-      body: JSON.stringify({ ...d, enabled }),
+      body: JSON.stringify({ ...d, params: cleanParams(info, d.params, d.market), enabled }),
     }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["strategies"] }); onDone(); },
   });
@@ -120,7 +128,9 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
         <label className="field">策略
           <select value={d.strategy} onChange={(e) => {
             const next = catalog.find((c) => c.key === e.target.value)!;
-            setD({ ...d, strategy: next.key, params: defaults(next) });
+            // 名稱還是自動產生的就跟著換，使用者改過就不動
+            const name = d.name === autoName(d.symbol, info.label, d.interval) ? autoName(d.symbol, next.label, d.interval) : d.name;
+            setD({ ...d, name, strategy: next.key, params: defaults(next) });
           }}>
             {catalog.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
@@ -140,11 +150,15 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
       </div>
       <p className="muted" style={{ margin: "14px 0 6px" }}>{info.description}</p>
       <div className="form-grid">
-        {info.params.map((p) => (
+        {info.params.filter((p) => p.type !== "rules").map((p) => (
           <ParamField key={p.name} spec={p} value={d.params[p.name] ?? p.default}
             onChange={(v) => set("params", { ...d.params, [p.name]: v })} />
         ))}
       </div>
+      {info.params.filter((p) => p.type === "rules").map((p) => (
+        <RuleBuilder key={p.name} market={d.market} value={d.params[p.name] ?? p.default}
+          onChange={(v) => set("params", { ...d.params, [p.name]: v })} />
+      ))}
       <div className="toolbar" style={{ marginTop: 16, marginBottom: 0 }}>
         <label className="field" style={{ display: "flex", alignItems: "center", gap: 6 }}>回測
           <select value={bars} onChange={(e) => setBars(Number(e.target.value))}>
@@ -194,7 +208,7 @@ export function Strategies() {
   const labelOf = (key: string) => catalog.data.find((c) => c.key === key)?.label ?? key;
   const newDraft = (): Draft => {
     const first = catalog.data[0];
-    return { name: "BTC EMA 交叉 1h", strategy: first.key, symbol: "BTCUSDT", market: "futures", interval: "1h", params: defaults(first), enabled: false };
+    return { name: autoName("BTCUSDT", first.label, "1h"), strategy: first.key, symbol: "BTCUSDT", market: "futures", interval: "1h", params: defaults(first), enabled: false };
   };
 
   return (
