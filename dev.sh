@@ -38,7 +38,7 @@ info "檢查後端套件…"
 (cd "$ROOT/backend" && uv sync --quiet)
 if [[ ! -d "$ROOT/frontend/node_modules" || "$ROOT/frontend/package-lock.json" -nt "$ROOT/frontend/node_modules" ]]; then
   info "安裝前端套件…"
-  (cd "$ROOT/frontend" && npm install --no-fund --no-audit)
+  (cd "$ROOT/frontend" && npm install --no-fund --no-audit && touch node_modules)
 fi
 
 # ---- 啟動 ----

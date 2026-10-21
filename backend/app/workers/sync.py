@@ -7,8 +7,8 @@ from sqlalchemy import select
 
 from ..engine.executor import Executor
 from ..engine.ledger import LedgerState, apply_fill
-from ..engine.sizing import protection_hit
 from ..models import BalanceSnapshot, EquitySnapshot, Order, Position, Trade, utcnow
+from ..services.market_stream import MarketHub
 
 log = logging.getLogger(__name__)
 
@@ -23,11 +23,11 @@ async def every(seconds: int, fn, name: str):
 
 
 class SyncWorkers:
-    def __init__(self, executor: Executor):
+    def __init__(self, executor: Executor, hub: MarketHub):
         self.ex = executor
+        self.hub = hub
         self.sf = executor.sf
         self.bus = executor.bus
-        self._triggered: set[int] = set()  # 已送出軟體停損的 position id
         self._warned: set[str] = set()
 
     # ------------------------------------------------------------ 餘額
@@ -60,7 +60,10 @@ class SyncWorkers:
                     select(Position).where(Position.market == market, Position.closed_at.is_(None))
                 )).all()
                 remote = await adapter.fetch_positions()
-                prices = await adapter.fetch_prices([p.symbol for p in ledger])
+                # 優先用 WebSocket 的即時價格，沒有（或太舊）才用 REST 補
+                prices = {p.symbol: px for p in ledger if (px := self.hub.fresh_price(market, p.symbol))}
+                missing = [p.symbol for p in ledger if p.symbol not in prices]
+                prices.update(await adapter.fetch_prices(missing))
 
                 if remote is not None:
                     by_symbol = {r.symbol: r for r in remote}
@@ -90,20 +93,10 @@ class SyncWorkers:
                             changed = True
                 await s.commit()
 
+                # WebSocket 斷線時的備援：用這次同步到的價格也檢查一次停損停利
                 for p in ledger:
-                    if p.closed_at or p.native_protection or p.id in self._triggered or not p.mark_price:
-                        continue
-                    hit = protection_hit(p.side, p.mark_price, p.stop_price, p.take_profit_price)
-                    if hit:
-                        self._triggered.add(p.id)
-                        await self.bus.emit(
-                            "log", level="warn", category="risk",
-                            message=f"{p.symbol} 標記價格 {p.mark_price} 觸發{'停損' if hit == 'stop' else '停利'}，送出平倉",
-                        )
-                        await self.ex.submit(
-                            source="protection", ticker=p.symbol, market=market, action="close", target="flat",
-                            strategy=hit, raw={"position_id": p.id, "mark_price": p.mark_price},
-                        )
+                    if not p.closed_at and p.mark_price:
+                        self.hub.on_price(market, p.symbol, p.mark_price)
         if changed:
             await self.bus.emit("position_update", None)
 

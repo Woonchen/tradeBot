@@ -4,6 +4,7 @@ import {
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, qs, type Candle, type Market, type Position, type Trade } from "../api/client";
+import { live, useLiveConnected } from "../api/liveSocket";
 import { fmtPrice, fmtSigned, INTENT_ZH } from "../format";
 import { baseOptions, useChartColors } from "./chartTheme";
 
@@ -37,12 +38,13 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
   });
   const resolved = klines.data?.symbol;
 
-  // 即時更新：每 5 秒抓最後兩根 K 棒
-  const live = useQuery({
+  // 即時更新：透過後端轉發 Binance WebSocket 的 K 線；即時連線中斷時改成每 5 秒輪詢
+  const connected = useLiveConnected();
+  const poll = useQuery({
     queryKey: ["klines-live", symbol, market, interval],
     queryFn: () => api<{ candles: Candle[] }>(`/api/klines?${qs({ symbol, market, interval, limit: 2 })}`),
     refetchInterval: 5000,
-    enabled: !!resolved,
+    enabled: !!resolved && !connected,
   });
   const trades = useQuery({
     queryKey: ["trades", resolved, market],
@@ -94,12 +96,36 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
     chartRef.current?.timeScale().scrollToRealTime();
   }, [klines.data, colors]);
 
+  // 最後一根 K 棒的時間；只能更新同一根或更新的 K 棒，舊的資料會讓 lightweight-charts 丟錯
+  const lastTime = useRef(0);
+  const [tick, setTick] = useState<Candle | null>(null);
   useEffect(() => {
-    const s = seriesRef.current;
-    if (!s || !live.data || !klines.data) return;
-    const last = klines.data.candles.at(-1)?.time ?? 0;
-    for (const c of live.data.candles) if (c.time >= last) s.update({ ...c, time: c.time as UTCTimestamp });
-  }, [live.data, klines.data]);
+    lastTime.current = klines.data?.candles.at(-1)?.time ?? 0;
+  }, [klines.data]);
+  const pushCandle = (c: Candle) => {
+    if (!seriesRef.current || c.time < lastTime.current) return;
+    seriesRef.current.update({ ...c, time: c.time as UTCTimestamp });
+    lastTime.current = c.time;
+    setTick(c);
+  };
+
+  useEffect(() => {
+    if (!resolved) return;
+    setTick(null);
+    live.setChart({ symbol: resolved, market, interval });
+    const off = live.onMessage((msg) => {
+      const d = msg.data;
+      if (msg.type === "kline" && d.symbol === resolved && d.market === market && d.interval === interval) pushCandle(d.candle);
+    });
+    return () => {
+      off();
+      live.setChart(null);
+    };
+  }, [resolved, market, interval]);
+
+  useEffect(() => {
+    for (const c of poll.data?.candles ?? []) pushCandle(c);
+  }, [poll.data]);
 
   // 買賣點
   const markers = useMemo<SeriesMarker<Time>[]>(() => {
@@ -143,7 +169,7 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
     add(position.liquidation_price, colors.warn, "強平", LineStyle.Dotted);
   }, [position, colors, klines.data]);
 
-  const last = hover ?? klines.data?.candles.at(-1) ?? null;
+  const last = hover ?? tick ?? klines.data?.candles.at(-1) ?? null;
   const change = last ? (last.close - last.open) / last.open : 0;
 
   return (
@@ -175,7 +201,7 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
             {position.liquidation_price && <span style={{ color: colors.warn }}><span className="swatch-line" style={{ borderTopStyle: "dotted" }} /> 強平</span>}
           </>
         )}
-        <span className="muted">點擊 K 棒查看該時段成交明細</span>
+        <span className="muted">{connected ? "● 即時推送" : "○ 連線中斷，每 5 秒更新"} · 點擊 K 棒查看該時段成交明細</span>
       </div>
     </div>
   );

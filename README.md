@@ -2,8 +2,8 @@
 
 用 **TradingView** 策略訊號驅動的加密貨幣自動交易機器人（Binance 現貨 + USDⓈ-M 永續合約），附帶一個網頁儀表板，可以看到：
 
-- **K 線圖 + 買賣點**：TradingView Lightweight Charts，標出每一筆成交（開多／平多／開空／平空，平倉標註已實現損益），以及持倉的開倉價、停損、停利、強平價線
-- **倉位**：持倉中與歷史部位、未實現損益，可以一鍵平倉
+- **K 線圖 + 買賣點**：TradingView Lightweight Charts，K 線透過 Binance WebSocket 即時推送，標出每一筆成交（開多／平多／開空／平空，平倉標註已實現損益），以及持倉的開倉價、停損、停利、強平價線
+- **倉位**：持倉中與歷史部位、即時標記價格與未實現損益，可以一鍵平倉
 - **錢包**：總權益曲線（每分鐘快照）、區間報酬與最大回撤、資產明細
 - **操作軌跡**：所有事件的時間軸，點開可以看「訊號 → 訂單 → 成交」的完整鏈路
 - **設定**：下單大小、槓桿、停損停利、每日虧損上限（Kill switch）、交易對白名單、啟用／停用、緊急全部平倉
@@ -15,7 +15,8 @@ TradingView (Pine Script → Alert)
 FastAPI ── 驗證 secret、去重、立刻回 200 ──► asyncio 佇列
       │                                       │
       │                    Executor：風控 → 算數量 → ccxt 下單 → 成交入帳 → 部位帳本
-      │                    Workers：餘額快照(60s)、部位/標記價格/軟體停損(15s)、未成交訂單追蹤(20s)
+      │                    MarketHub：Binance 公開 WebSocket → 圖表 K 線、持倉即時價格、逐 tick 檢查停損停利
+      │                    Workers：餘額快照(60s)、部位同步(15s，WebSocket 斷線時的備援)、未成交訂單追蹤(20s)
       ▼
 SQLite / PostgreSQL ◄── REST API + WebSocket 即時推播 ──► React 儀表板
 ```
@@ -112,9 +113,22 @@ curl -X POST localhost:8000/webhook/tradingview -d '{
 - **數量**：每筆固定 N USDT 保證金，或是可用餘額的 N%；合約的實際部位 = 保證金 × 槓桿。數量依交易所精度無條件捨去，低於最小下單金額時拒絕
 - **開倉前檢查**：Bot 是否啟用、白名單、最大持倉數、每日虧損上限、可用餘額
 - **Kill switch**：今日（UTC）已實現損益扣掉手續費後達到上限，就自動停用 Bot 並通知
-- **停損／停利**：Binance 合約會嘗試在交易所掛條件單；失敗時，以及現貨／paper 模式，改由背景程序每 15 秒檢查標記價格（軟體停損）
+- **停損／停利**：Binance 合約會嘗試在交易所掛條件單；失敗時，以及現貨／paper 模式，改用軟體停損：每收到一筆即時價格（合約用標記價格，約每秒一次）就檢查一次；WebSocket 斷線時退回每 15 秒用 REST 價格檢查
 - **交易所自行平倉**（原生停損、強平、在 Binance 手動平倉）會被部位同步偵測到，並以標記價格補記一筆成交
 - 停用 Bot 只會擋 TradingView 訊號；手動平倉、緊急全部平倉、停損停利不受影響
+
+## 即時行情（免費）
+
+行情來自 Binance 公開 WebSocket，不需要 API key。後端每個市場只開一條連線，依需要動態訂閱，斷線（包含 Binance 每 24 小時的主動斷線）會自動重連：
+
+| 用途 | Stream | 更新頻率 |
+|---|---|---|
+| 圖表 K 線（合約） | `<symbol>@kline_<interval>` | 約 250ms |
+| 圖表 K 線（現貨） | `<symbol>@kline_<interval>` | 約 1–2 秒 |
+| 持倉價格（合約） | `<symbol>@markPrice@1s` | 1 秒 |
+| 持倉價格（現貨） | `<symbol>@miniTicker` | 1 秒 |
+
+正式環境的合約 K 線與標記價格在 `wss://fstream.binance.com/market/ws`（舊的 `/ws` 已不再推送這些資料）；`TESTNET=true` 時改連 Demo Trading 的 stream。`GET /health` 的 `market_stream` 會顯示目前連線狀態。前端與後端的即時連線中斷時，K 線圖會自動退回每 5 秒輪詢。
 
 ## 部署（VPS + Docker）
 

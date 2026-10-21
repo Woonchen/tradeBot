@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api, type ActivityLog, type EquityPoint, type Summary } from "../api/client";
+import { api, type ActivityLog, type EquityPoint, type Position, type Summary } from "../api/client";
+import { useLivePrices } from "../api/liveSocket";
 import { ActivityTimeline } from "../components/ActivityTimeline";
 import { EquityChart } from "../components/EquityChart";
-import { fmtNum, fmtPct, fmtSigned, pnlClass } from "../format";
+import { fmtNum, fmtPct, fmtSigned, livePnl, pnlClass } from "../format";
 import { BotControls } from "./BotControls";
 import { PositionsTable } from "./Positions";
 
@@ -21,6 +22,11 @@ export function Dashboard() {
   const summary = useQuery({ queryKey: ["summary"], queryFn: () => api<Summary>("/api/summary"), refetchInterval: 30_000 });
   const equity = useQuery({ queryKey: ["equity", 7], queryFn: () => api<EquityPoint[]>("/api/equity?days=7") });
   const logs = useQuery({ queryKey: ["activity", "recent"], queryFn: () => api<ActivityLog[]>("/api/activity?limit=10") });
+  const positions = useQuery({ queryKey: ["positions", "open"], queryFn: () => api<Position[]>("/api/positions") });
+  const prices = useLivePrices();
+  const unrealized = positions.data
+    ? positions.data.reduce((sum, p) => sum + livePnl(p, prices[`${p.market}:${p.symbol}`]).pnl, 0)
+    : summary.data?.unrealized;
   const s = summary.data;
   const totalReturn = s?.equity && s.start_equity ? s.equity / s.start_equity - 1 : null;
 
@@ -33,7 +39,7 @@ export function Dashboard() {
       <div className="tiles">
         <Tile label="總權益 (USDT)" value={fmtNum(s?.equity)} sub={`今日 ${fmtSigned(s?.equity_change_today)}`} />
         <Tile label="今日已實現（扣手續費）" value={fmtSigned(s?.realized_today)} cls={pnlClass(s?.realized_today)} />
-        <Tile label="未實現損益" value={fmtSigned(s?.unrealized)} cls={pnlClass(s?.unrealized)} sub={`${s?.open_positions ?? 0} 個持倉`} />
+        <Tile label="未實現損益（即時）" value={fmtSigned(unrealized)} cls={pnlClass(unrealized)} sub={`${positions.data?.length ?? s?.open_positions ?? 0} 個持倉`} />
         <Tile label="累計已實現" value={fmtSigned(s?.realized_total)} cls={pnlClass(s?.realized_total)} sub={`總報酬 ${totalReturn === null ? "—" : fmtSigned(totalReturn * 100) + "%"}`} />
         <Tile label="勝率" value={fmtPct(s?.win_rate)} sub={`${s?.closed_trades ?? 0} 筆平倉 · 最大回撤 ${fmtPct(s?.max_drawdown)}`} />
       </div>

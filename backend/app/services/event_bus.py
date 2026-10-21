@@ -18,6 +18,8 @@ class EventBus:
         self.session_factory = session_factory
         self.clients: set[WebSocket] = set()
         self._tasks: set[asyncio.Task] = set()
+        # 其他元件想知道事件時註冊在這裡（async fn(type, data)），例如 MarketHub 要知道持倉變動
+        self.listeners: list = []
 
     async def emit(
         self,
@@ -43,6 +45,11 @@ class EventBus:
                 log_entry = entry.to_dict()
             getattr(log, "warning" if level == "warn" else level)("[%s] %s", category, message)
         await self.broadcast({"type": type, "data": data, "log": log_entry})
+        for fn in self.listeners:
+            try:
+                await fn(type, data)
+            except Exception:
+                log.exception("event listener failed")
         if message and (notify or level == "error"):
             task = asyncio.create_task(send_telegram(f"[{level.upper()}] {message}"))
             self._tasks.add(task)

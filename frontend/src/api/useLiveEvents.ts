@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import { getToken } from "./client";
+import { useEffect } from "react";
+import { live, useLiveConnected } from "./liveSocket";
 
 // 後端事件 → 要重新抓的 query
 const INVALIDATE: Record<string, string[][]> = {
@@ -13,43 +13,19 @@ const INVALIDATE: Record<string, string[][]> = {
   log: [["activity"]],
 };
 
-/** 連到後端 /ws，收到事件就讓對應的資料自動更新；斷線會自動重連。 */
+/** 登入後建立即時連線，收到事件就讓對應的資料自動更新；斷線會自動重連。 */
 export function useLiveEvents(): boolean {
   const qc = useQueryClient();
-  const [connected, setConnected] = useState(false);
-
   useEffect(() => {
-    let ws: WebSocket | null = null;
-    let retry: ReturnType<typeof setTimeout>;
-    let ping: ReturnType<typeof setInterval>;
-    let closed = false;
-
-    const connect = () => {
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(getToken() ?? "")}`);
-      ws.onopen = () => {
-        setConnected(true);
-        ping = setInterval(() => ws?.send("ping"), 25_000);
-      };
-      ws.onmessage = (e) => {
-        const msg = JSON.parse(e.data) as { type: string; log: unknown };
-        const keys = INVALIDATE[msg.type] ?? (msg.log ? [["activity"]] : []);
-        keys.forEach((queryKey) => qc.invalidateQueries({ queryKey }));
-      };
-      ws.onclose = () => {
-        setConnected(false);
-        clearInterval(ping);
-        if (!closed) retry = setTimeout(connect, 3000);
-      };
-    };
-    connect();
+    live.start();
+    const off = live.onMessage((msg) => {
+      const keys = INVALIDATE[msg.type] ?? (msg.log ? [["activity"]] : []);
+      keys.forEach((queryKey) => qc.invalidateQueries({ queryKey }));
+    });
     return () => {
-      closed = true;
-      clearTimeout(retry);
-      clearInterval(ping);
-      ws?.close();
+      off();
+      live.stop();
     };
   }, [qc]);
-
-  return connected;
+  return useLiveConnected();
 }

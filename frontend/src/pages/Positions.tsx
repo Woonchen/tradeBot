@@ -1,7 +1,8 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, type Position } from "../api/client";
-import { fmtPrice, fmtSigned, fmtTime, pnlClass } from "../format";
+import { useLivePrices } from "../api/liveSocket";
+import { fmtPrice, fmtSigned, fmtTime, livePnl, pnlClass } from "../format";
 
 export function PositionsTable({ compact = false, status = "open" }: { compact?: boolean; status?: "open" | "closed" }) {
   const { data = [] } = useQuery({
@@ -10,6 +11,7 @@ export function PositionsTable({ compact = false, status = "open" }: { compact?:
     refetchInterval: status === "open" ? 15_000 : false,
   });
   const close = useMutation({ mutationFn: (id: number) => api(`/api/positions/${id}/close`, { method: "POST" }) });
+  const prices = useLivePrices();
   if (data.length === 0) return <div className="empty">{status === "open" ? "目前沒有持倉" : "沒有歷史部位"}</div>;
   return (
     <div className="table-wrap">
@@ -29,7 +31,9 @@ export function PositionsTable({ compact = false, status = "open" }: { compact?:
           </tr>
         </thead>
         <tbody>
-          {data.map((p) => (
+          {data.map((p) => {
+            const { mark, pnl } = livePnl(p, status === "open" ? prices[`${p.market}:${p.symbol}`] : undefined);
+            return (
             <tr key={p.id}>
               <td>{p.symbol} <span className="muted">{p.market === "futures" ? "合約" : "現貨"}</span></td>
               <td><span className={`badge ${p.side}`}>{p.side === "long" ? "▲ 多" : "▼ 空"}</span></td>
@@ -37,8 +41,8 @@ export function PositionsTable({ compact = false, status = "open" }: { compact?:
               <td className="num">{fmtPrice(p.entry_price)}</td>
               {status === "open" ? (
                 <>
-                  <td className="num">{fmtPrice(p.mark_price)}</td>
-                  <td className={`num ${pnlClass(p.unrealized_pnl)}`}>{fmtSigned(p.unrealized_pnl, 4)}</td>
+                  <td className="num">{fmtPrice(mark)}</td>
+                  <td className={`num ${pnlClass(pnl)}`}>{fmtSigned(pnl, 4)}</td>
                   {!compact && (
                     <>
                       <td className="num">{p.leverage}x</td>
@@ -63,7 +67,8 @@ export function PositionsTable({ compact = false, status = "open" }: { compact?:
                 </>
               )}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

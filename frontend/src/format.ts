@@ -25,3 +25,12 @@ export const STATUS_ZH: Record<string, string> = {
   accepted: "排隊中", executed: "已執行", rejected: "已拒絕", failed: "失敗",
   new: "新建", open: "掛單中", filled: "已成交", canceled: "已取消", unknown: "狀態不明",
 };
+
+/** 用即時價格重算未實現損益（沒有即時價格就用後端的數值） */
+export const livePnl = (
+  p: { side: "long" | "short"; qty: number; entry_price: number; mark_price: number | null; unrealized_pnl: number },
+  price: number | undefined,
+) =>
+  price === undefined
+    ? { mark: p.mark_price, pnl: p.unrealized_pnl }
+    : { mark: price, pnl: (price - p.entry_price) * p.qty * (p.side === "long" ? 1 : -1) };
