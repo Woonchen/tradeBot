@@ -8,10 +8,12 @@ import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
 import { PositionsPage } from "./pages/Positions";
 import { Settings } from "./pages/Settings";
+import { Strategies } from "./pages/Strategies";
 import { Wallet } from "./pages/Wallet";
 
 const NAV = [
-  ["/", "總覽"], ["/chart", "K 線圖"], ["/positions", "倉位"], ["/wallet", "錢包"], ["/activity", "操作軌跡"], ["/settings", "設定"],
+  ["/", "總覽"], ["/chart", "K 線圖"], ["/strategies", "策略"], ["/positions", "倉位"], ["/wallet", "錢包"],
+  ["/activity", "操作軌跡"], ["/settings", "設定"],
 ];
 
 function Shell() {
@@ -32,6 +34,7 @@ function Shell() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/chart" element={<ChartPage />} />
+          <Route path="/strategies" element={<Strategies />} />
           <Route path="/positions" element={<PositionsPage />} />
           <Route path="/wallet" element={<Wallet />} />
           <Route path="/activity" element={<Activity />} />

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import auth, bot, history, market, portfolio, webhook, ws
+from .api import auth, bot, history, market, portfolio, strategies, webhook, ws
 from .config import settings
 from .db import SessionLocal, engine
 from .engine.executor import Executor
@@ -14,6 +14,7 @@ from .exchange.factory import build_adapters
 from .models import Base
 from .services.event_bus import EventBus
 from .services.market_stream import MarketHub
+from .workers.strategy_runner import StrategyRunner
 from .workers.sync import SyncWorkers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -31,13 +32,20 @@ async def lifespan(app: FastAPI):
     adapters = build_adapters(settings, SessionLocal)
     executor = Executor(adapters, bus, SessionLocal)
     hub = MarketHub(executor, settings)
+    runner = StrategyRunner(executor)
     app.state.executor = executor
     app.state.hub = hub
+    app.state.strategy_runner = runner
 
     mode = "Paper 模擬" if settings.execution_mode == "paper" else ("Binance Demo" if settings.testnet else "Binance 正式帳戶")
     await bus.emit("log", category="system", message=f"系統啟動，執行模式：{mode}")
     await executor.requeue_pending()
-    tasks = [asyncio.create_task(executor.run()), *hub.start(), *SyncWorkers(executor, hub).start(settings)]
+    tasks = [
+        asyncio.create_task(executor.run()),
+        *hub.start(),
+        *SyncWorkers(executor, hub).start(settings),
+        asyncio.create_task(runner.run()),
+    ]
     try:
         yield
     finally:
@@ -55,7 +63,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-for r in (auth.router, webhook.router, market.router, history.router, portfolio.router, bot.router, ws.router):
+for r in (
+    auth.router, webhook.router, market.router, history.router, portfolio.router, bot.router,
+    strategies.router, ws.router,
+):
     app.include_router(r)
 
 

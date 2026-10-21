@@ -173,3 +173,24 @@ class BotSettings(Base):
     # 開倉後自動掛的保護單（%，0 = 不掛），僅合約
     stop_loss_pct: Mapped[float] = mapped_column(Float, default=0)
     take_profit_pct: Mapped[float] = mapped_column(Float, default=0)
+
+
+class StrategyConfig(Base):
+    """一個正在（或可以）自動執行的策略：哪個策略、哪個交易對、哪個週期、什麼參數。"""
+
+    __tablename__ = "strategy_configs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64))
+    strategy: Mapped[str] = mapped_column(String(32))  # REGISTRY 的 key
+    symbol: Mapped[str] = mapped_column(String(40))  # 例如 BTCUSDT
+    market: Mapped[str] = mapped_column(String(10))
+    interval: Mapped[str] = mapped_column(String(4))
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 執行狀態：最後一根處理過的 K 棒、當時策略的判斷
+    last_target: Mapped[str | None] = mapped_column(String(5))
+    last_bar_time: Mapped[int | None] = mapped_column(Integer)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

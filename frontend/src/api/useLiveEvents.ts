@@ -10,6 +10,7 @@ const INVALIDATE: Record<string, string[][]> = {
   position_update: [["positions"], ["summary"]],
   balance_update: [["equity"], ["balances"], ["summary"]],
   bot: [["bot"], ["activity"]],
+  strategy: [["strategies"], ["activity"]],
   log: [["activity"]],
 };
 

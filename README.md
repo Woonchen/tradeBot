@@ -117,6 +117,46 @@ curl -X POST localhost:8000/webhook/tradingview -d '{
 - **交易所自行平倉**（原生停損、強平、在 Binance 手動平倉）會被部位同步偵測到，並以標記價格補記一筆成交
 - 停用 Bot 只會擋 TradingView 訊號；手動平倉、緊急全部平倉、停損停利不受影響
 
+## 內建策略（不需要 TradingView）
+
+除了接 TradingView 的訊號，也可以直接在機器人裡跑 Python 策略。儀表板的「策略」頁可以選策略、交易對、K 線週期、調參數、**回測**，再啟用。
+
+- 每根 K 棒**收盤後**計算一次，策略判斷（多 / 空 / 空手）**改變時**才送出訊號，跟 TradingView 警示走同一條下單流程（風控、Bot 開關、停損停利都適用）
+- 剛啟用或修改參數時只記下目前判斷，**等下一次改變才進場**，不會一啟動就追單
+- 回測用同一份策略程式：訊號在收盤產生、下一根開盤成交、扣手續費（不含滑價、資金費率、強平）
+- 內建：`ema_cross`（EMA 均線交叉 + ATR 停損）、`rsi_reversion`（RSI 超買超賣反轉）
+
+### 自己寫一個策略
+
+在 `backend/app/strategies/` 新增檔案，例如 `breakout.py`：
+
+```python
+from .base import Candle, Param, Strategy, Target, register
+
+
+@register
+class Breakout(Strategy):
+    key = "breakout"
+    label = "N 根高點突破"
+    description = "收盤價突破前 N 根最高價做多，跌破前 N 根最低價平倉。"
+    params = [Param("length", "N", "int", 20, min=2, max=500)]
+
+    def targets(self, candles: list[Candle]) -> list[Target]:
+        n, pos, out = self.p["length"], "flat", []
+        for i, c in enumerate(candles):
+            if i >= n:
+                hi = max(x.high for x in candles[i - n:i])
+                lo = min(x.low for x in candles[i - n:i])
+                if c.close > hi:
+                    pos = "long"
+                elif c.close < lo:
+                    pos = "flat"
+            out.append(pos)
+        return out
+```
+
+再到 `backend/app/strategies/__init__.py` 的 import 加上 `breakout`，重新啟動（或重新部署）後就會出現在「策略」頁，參數表單會依 `params` 自動產生。規則：`targets()` 對每一根 K 棒回傳「收盤後該持有的部位」，**只能用到第 i 根（含）以前的資料**；`app/strategies/indicators.py` 有 EMA、SMA、RSI、ATR、交叉判斷可以用。
+
 ## 即時行情（免費）
 
 行情來自 Binance 公開 WebSocket，不需要 API key。後端每個市場只開一條連線，依需要動態訂閱，斷線（包含 Binance 每 24 小時的主動斷線）會自動重連：

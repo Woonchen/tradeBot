@@ -17,7 +17,7 @@ from .sizing import compute_order_size, protection_prices
 log = logging.getLogger(__name__)
 
 SIDE_ZH = {"buy": "買入", "sell": "賣出"}
-SOURCE_ZH = {"tradingview": "TradingView", "manual": "手動", "protection": "停損停利"}
+SOURCE_ZH = {"tradingview": "TradingView", "manual": "手動", "protection": "停損停利", "strategy": "策略"}
 INTENT_ZH = {"open_long": "開多", "close_long": "平多", "open_short": "開空", "close_short": "平空"}
 
 
@@ -131,7 +131,7 @@ class Executor:
             raise Reject(f"不支援的市場：{sig.market}")
         cfg = await load_bot_settings(s)
 
-        if sig.source == "tradingview":
+        if sig.source in ("tradingview", "strategy"):  # 自動訊號才受 Bot 開關與白名單限制
             if not cfg.enabled:
                 raise Reject("Bot 已停用")
             allowed = {normalize_ticker(x) for x in cfg.symbols or []}

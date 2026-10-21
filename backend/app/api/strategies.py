@@ -1,0 +1,142 @@
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..db import get_session
+from ..engine.executor import Executor
+from ..engine.risk import load_bot_settings
+from ..exchange.base import UnknownSymbol
+from ..models import StrategyConfig
+from ..strategies import INTERVAL_SECONDS, REGISTRY, build_strategy
+from ..strategies.backtest import run_backtest
+from ..strategies.history import fetch_candles
+from .deps import get_executor, require_user
+
+router = APIRouter(prefix="/api/strategies", tags=["strategies"], dependencies=[Depends(require_user)])
+
+
+class StrategyBody(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    strategy: str
+    symbol: str = Field(min_length=2, max_length=40)
+    market: Literal["spot", "futures"]
+    interval: str
+    params: dict = {}
+    enabled: bool = False
+
+
+class BacktestBody(BaseModel):
+    strategy: str
+    symbol: str
+    market: Literal["spot", "futures"]
+    interval: str
+    params: dict = {}
+    bars: int = Field(1000, ge=50, le=5000)
+    size_mode: Literal["fixed", "percent"] | None = None
+    size_value: float | None = Field(None, gt=0)
+    leverage: int | None = Field(None, ge=1, le=125)
+    start_equity: float = Field(10_000, gt=0)
+
+
+async def _validate(body: StrategyBody | BacktestBody, ex: Executor) -> str:
+    if body.interval not in INTERVAL_SECONDS:
+        raise HTTPException(422, f"週期必須是 {list(INTERVAL_SECONDS)} 之一")
+    try:
+        build_strategy(body.strategy, body.params)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    try:
+        return await ex.adapters[body.market].resolve_symbol(body.symbol)
+    except UnknownSymbol:
+        raise HTTPException(422, f"找不到交易對 {body.symbol}（{body.market}）")
+
+
+def _runner(request: Request):
+    return request.app.state.strategy_runner
+
+
+@router.get("/catalog")
+async def catalog():
+    return [cls.describe() for cls in REGISTRY.values()]
+
+
+@router.get("")
+async def list_configs(s: AsyncSession = Depends(get_session)):
+    return [c.to_dict() for c in (await s.scalars(select(StrategyConfig).order_by(StrategyConfig.id))).all()]
+
+
+@router.post("")
+async def create_config(body: StrategyBody, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor)):
+    await _validate(body, ex)
+    cfg = StrategyConfig(**body.model_dump())
+    cfg.symbol = cfg.symbol.upper()
+    s.add(cfg)
+    await s.commit()
+    await ex.bus.emit("strategy", cfg.to_dict(), category="system",
+                      message=f"新增策略「{cfg.name}」（{cfg.strategy} {cfg.symbol} {cfg.market} {cfg.interval}）"
+                      + ("，已啟用" if cfg.enabled else ""))
+    return cfg.to_dict()
+
+
+@router.put("/{config_id}")
+async def update_config(
+    config_id: int, body: StrategyBody, request: Request,
+    s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor),
+):
+    cfg = await s.get(StrategyConfig, config_id)
+    if not cfg:
+        raise HTTPException(404)
+    await _validate(body, ex)
+    changed_logic = any(getattr(cfg, k) != v for k, v in body.model_dump(exclude={"name", "enabled"}).items())
+    turned_on = body.enabled and not cfg.enabled
+    for k, v in body.model_dump().items():
+        setattr(cfg, k, v)
+    cfg.symbol = cfg.symbol.upper()
+    if changed_logic or turned_on:
+        # 參數改了或重新啟用：重新觀察，等「之後」判斷改變才下單，不會立刻進場
+        cfg.last_target = cfg.last_bar_time = None
+    cfg.last_error = None
+    await s.commit()
+    _runner(request).reset(cfg.id)
+    await ex.bus.emit("strategy", cfg.to_dict(), category="system",
+                      message=f"策略「{cfg.name}」已更新" + ("（啟用中）" if cfg.enabled else "（已停用）"))
+    return cfg.to_dict()
+
+
+@router.delete("/{config_id}")
+async def delete_config(config_id: int, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor)):
+    cfg = await s.get(StrategyConfig, config_id)
+    if not cfg:
+        raise HTTPException(404)
+    await s.delete(cfg)
+    await s.commit()
+    await ex.bus.emit("strategy", None, category="system", message=f"刪除策略「{cfg.name}」（既有持倉不會自動平倉）")
+    return {"ok": True}
+
+
+@router.post("/backtest")
+async def backtest(body: BacktestBody, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor)):
+    symbol = await _validate(body, ex)
+    bot = await load_bot_settings(s)
+    strat = build_strategy(body.strategy, body.params)
+    candles = await fetch_candles(ex.adapters[body.market], symbol, body.interval, body.bars)
+    if len(candles) < 50:
+        raise HTTPException(422, "歷史 K 線不足")
+    res = run_backtest(
+        strat, candles, market=body.market,
+        size_mode=body.size_mode or bot.size_mode,
+        size_value=body.size_value or bot.size_value,
+        leverage=body.leverage or bot.leverage,
+        start_equity=body.start_equity,
+    )
+    return {
+        "symbol": symbol,
+        "params": strat.p,
+        "candles": [c.__dict__ for c in candles],
+        "trades": res.trades,
+        "equity": res.equity,
+        "stats": res.stats,
+    }

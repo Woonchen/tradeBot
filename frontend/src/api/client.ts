@@ -81,3 +81,26 @@ export const qs = (params: Record<string, string | number | undefined | null>) =
   new URLSearchParams(
     Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "") as [string, string][],
   ).toString();
+
+export interface ParamSpec {
+  name: string; label: string; type: "int" | "float" | "bool"; default: number | boolean;
+  min: number | null; max: number | null; step: number | null; help: string;
+}
+export interface StrategyInfo { key: string; label: string; description: string; params: ParamSpec[] }
+export interface StrategyConfig {
+  id: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
+  params: Record<string, number | boolean>; enabled: boolean; last_target: string | null;
+  last_bar_time: number | null; last_run_at: string | null; last_error: string | null;
+}
+export interface BacktestTrade {
+  side: "long" | "short"; entry_time: number; exit_time: number; entry: number; exit: number; qty: number;
+  pnl: number; fees: number; net: number;
+}
+export interface BacktestResult {
+  symbol: string; params: Record<string, number | boolean>; candles: (Candle & { volume: number })[];
+  trades: BacktestTrade[]; equity: { time: number; value: number }[];
+  stats: {
+    start_equity: number; final_equity: number; total_return: number; max_drawdown: number; trades: number;
+    win_rate: number | null; profit_factor: number | null; fees: number; buy_hold_return: number; bars: number;
+  };
+}
