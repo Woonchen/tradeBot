@@ -1,0 +1,19 @@
+# SITE_ADDRESS 設成你的網域（例如 bot.example.com）時，Caddy 會自動申請 HTTPS 憑證；
+# 預設 :80 只適合本機或放在 ngrok / cloudflared 後面
+{$SITE_ADDRESS::80} {
+	encode gzip
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+	handle /webhook/* {
+		reverse_proxy backend:8000
+	}
+	handle /ws {
+		reverse_proxy backend:8000
+	}
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
