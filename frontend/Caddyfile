@@ -1,3 +1,11 @@
+{
+	# 前面還有一層反向代理（共用機器時）時，保留它傳來的 X-Forwarded-For，
+	# 後端才拿得到 TradingView 的真實 IP（IP 白名單會用到）。只信任內網位址。
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
 # SITE_ADDRESS 設成你的網域（例如 bot.example.com）時，Caddy 會自動申請 HTTPS 憑證；
 # 預設 :80 只適合本機或放在 ngrok / cloudflared 後面
 {$SITE_ADDRESS::80} {

@@ -1,0 +1,21 @@
+# 跟其他服務共用一台機器、前面已經有反向代理（例如另一個專案的 Caddy 佔用 80/443）時使用：
+#
+#   docker compose -p tradebot -f docker-compose.yml -f docker-compose.proxy.yml up -d --build
+#
+# - web 不再綁定主機的 80/443，改成加入既有代理所在的 docker network（EDGE_NETWORK）
+# - 既有代理用 `reverse_proxy tradebot-web:80` 把機器人的網域轉過來（HTTPS 由既有代理負責）
+services:
+  web:
+    ports: !reset []
+    environment:
+      SITE_ADDRESS: ":80"
+    networks:
+      default: {}
+      edge:
+        aliases:
+          - tradebot-web
+
+networks:
+  edge:
+    external: true
+    name: ${EDGE_NETWORK:-zushun_default}
