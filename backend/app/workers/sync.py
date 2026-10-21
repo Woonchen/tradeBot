@@ -53,6 +53,10 @@ class SyncWorkers:
 
     # ------------------------------------------------------------ 部位
     async def sync_positions(self):
+        async with self.ex.ledger_lock:
+            await self._sync_positions()
+
+    async def _sync_positions(self):
         changed = False
         async with self.sf() as s:
             for market, adapter in self.ex.adapters.items():
@@ -67,6 +71,7 @@ class SyncWorkers:
 
                 if remote is not None:
                     by_symbol = {r.symbol: r for r in remote}
+                    self._warned -= {p.symbol for p in ledger}  # 已納入帳本的就不再算「外部部位」
                     for r in remote:
                         if r.symbol not in {p.symbol for p in ledger} and r.symbol not in self._warned:
                             self._warned.add(r.symbol)
@@ -120,6 +125,10 @@ class SyncWorkers:
 
     # ------------------------------------------------------------ 訂單
     async def sync_orders(self):
+        async with self.ex.ledger_lock:
+            await self._sync_orders()
+
+    async def _sync_orders(self):
         async with self.sf() as s:
             pending = (await s.scalars(select(Order).where(Order.status.in_(("new", "open"))))).all()
             for o in pending:

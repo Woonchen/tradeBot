@@ -38,6 +38,9 @@ class Executor:
         self.bus = bus
         self.sf = session_factory
         self.queue: asyncio.Queue[int] = asyncio.Queue()
+        # 處理訊號（下單 → 寫入成交/帳本）期間持有；同步程序也要拿這把鎖才能比對交易所部位，
+        # 否則會在「交易所已成交、帳本還沒寫入」的空檔誤判部位不一致
+        self.ledger_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ 進件
     async def submit(
@@ -91,6 +94,10 @@ class Executor:
 
     # ------------------------------------------------------------------ 處理
     async def process(self, sid: int):
+        async with self.ledger_lock:
+            await self._process(sid)
+
+    async def _process(self, sid: int):
         async with self.sf() as s:
             sig = await s.get(Signal, sid)
             if not sig or sig.status != "accepted":
