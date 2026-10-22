@@ -194,6 +194,51 @@ SITE_ADDRESS=bot.example.com docker compose up -d --build
 - `backend` 使用 PostgreSQL（`postgres` 服務）
 - 資料表在啟動時自動建立（`create_all`）；之後如果要修改 schema，建議引入 Alembic
 
+## 資料庫備份
+
+每天台灣時間 03:30 由 systemd timer 執行 `deploy/backup.sh`：`pg_dump` → 確認備份檔讀得回來 → 上傳 Cloud Storage。
+成功或失敗都會寫進儀表板的「操作軌跡」。
+
+- VM 的 service account 對 bucket **只有建立權限**（`roles/storage.objectCreator`），讀不到也刪不掉既有備份，VM 被入侵時備份仍安全
+- bucket 禁止公開存取，生命週期規則會刪除 30 天前的備份
+- 另外 VM 的磁碟本身也有每日快照（`zushun-daily`，保留 14 天），但還原快照會影響同一台 VM 上的所有服務，只適合整台機器壞掉時使用
+
+第一次設定（在有 GCP 權限的電腦上）：
+
+```bash
+B=gs://tradebot-db-backups-510610
+echo '{"rule":[{"action":{"type":"Delete"},"condition":{"age":30}}]}' > lifecycle.json
+gcloud storage buckets create $B --location asia-east1 --uniform-bucket-level-access \
+  --public-access-prevention --lifecycle-file lifecycle.json
+gcloud storage buckets add-iam-policy-binding $B --role roles/storage.objectCreator \
+  --member serviceAccount:zushun-vm@zushun-510610.iam.gserviceaccount.com
+```
+
+然後在 VM 上：`~/tradebot/.env` 加上 `BACKUP_BUCKET=tradebot-db-backups-510610`，執行 `sudo ~/tradebot/deploy/install-backup.sh`。
+
+常用指令（VM 上）：
+
+```bash
+sudo systemctl start tradebot-backup.service          # 立刻備份一次
+journalctl -u tradebot-backup.service -n 20 --no-pager  # 看備份紀錄
+systemctl list-timers tradebot-backup.timer --no-pager   # 下次什麼時候跑
+```
+
+還原（VM 讀不到備份，要用有權限的帳號下載）：
+
+```bash
+gcloud storage ls -r gs://tradebot-db-backups-510610/            # 找要還原的那份
+gcloud storage cp gs://tradebot-db-backups-510610/2026/10/tradebot-YYYYMMDD-HHMMSS.dump ./restore.dump
+gcloud compute scp --zone asia-east1-c --tunnel-through-iap restore.dump zushum-prod:/tmp/restore.dump
+# 在 VM 上：先停後端避免寫入，再整個覆蓋還原
+docker stop tradebot-backend-1
+docker exec -i tradebot-postgres-1 pg_restore -U tradebot -d tradebot --clean --if-exists --no-owner < /tmp/restore.dump
+docker start tradebot-backend-1 && rm /tmp/restore.dump
+```
+
+不確定備份內容時，可以先還原到另一個資料庫檢查：
+`docker exec tradebot-postgres-1 createdb -U tradebot restore_check`，把上面的 `-d tradebot --clean --if-exists` 換成 `-d restore_check`，看完再 `dropdb`。
+
 ## 安全建議
 
 - Binance API key **只開「讀取 + 交易」，不要開提領**，並設定 IP 白名單（VPS 的 IP）
