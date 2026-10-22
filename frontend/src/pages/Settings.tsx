@@ -1,8 +1,57 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api, type BotSettings } from "../api/client";
+import { fmtNum } from "../format";
 
 type Form = Omit<BotSettings, "execution_mode" | "testnet" | "symbols"> & { symbols: string };
+
+/** 一列設定：左邊欄位名稱 + 說明，右邊輸入框。 */
+function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
+  return (
+    <label className="set-row">
+      <span className="set-label">{label}</span>
+      <span className="set-control">
+        {children}
+        {hint && <small>{hint}</small>}
+      </span>
+    </label>
+  );
+}
+
+/** 一組設定，例如「下單金額」。 */
+function Section({ title, desc, children }: { title: string; desc: string; children: ReactNode }) {
+  return (
+    <section className="set-section">
+      <div className="set-head">
+        <h2>{title}</h2>
+        <p>{desc}</p>
+      </div>
+      <div className="set-fields">{children}</div>
+    </section>
+  );
+}
+
+/** 數字輸入框，右側顯示單位。 */
+function NumInput({ value, unit, onChange, ...rest }: {
+  value: number; unit: string; onChange: (v: number) => void; min?: number; max?: number; step?: number | "any";
+}) {
+  return (
+    <span className="input-unit">
+      <input type="number" step="any" {...rest} value={value} onChange={(e) => onChange(Number(e.target.value))} />
+      <span>{unit}</span>
+    </span>
+  );
+}
+
+function Seg<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
+  return (
+    <span className="seg">
+      {options.map(([v, label]) => (
+        <button key={v} type="button" className={value === v ? "on" : ""} onClick={() => onChange(v)}>{label}</button>
+      ))}
+    </span>
+  );
+}
 
 export function Settings() {
   const qc = useQueryClient();
@@ -27,7 +76,10 @@ export function Settings() {
 
   if (!form || !bot.data) return null;
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm({ ...form, [k]: v });
-  const num = (k: keyof Form) => (e: React.ChangeEvent<HTMLInputElement>) => set(k, Number(e.target.value) as never);
+  const fixed = form.size_mode === "fixed";
+  const lev = Math.max(form.leverage, 1);
+  // 價格反向 x% 時，合約保證金大約虧掉 x × 槓桿 %
+  const onMargin = (pct: number) => (pct > 0 ? `合約 ${lev} 倍槓桿下，約等於保證金的 ${fmtNum(pct * lev, 1)}%` : "0 = 不設");
 
   return (
     <>
@@ -36,28 +88,58 @@ export function Settings() {
         執行模式：<strong>{bot.data.execution_mode === "paper" ? "Paper 本地模擬" : bot.data.testnet ? "Binance Demo Trading" : "⚠ Binance 正式帳戶"}</strong>
         （在後端 .env 設定 EXECUTION_MODE / TESTNET）
       </div>
-      <form className="card" onSubmit={(e) => { e.preventDefault(); save.mutate(form); }}>
-        <div className="form-grid">
-          <label className="field">允許交易的 Ticker<input value={form.symbols} onChange={(e) => set("symbols", e.target.value)} placeholder="BTCUSDT, ETHUSDT" /><small>留空 = 全部允許</small></label>
-          <label className="field">下單方式
-            <select value={form.size_mode} onChange={(e) => set("size_mode", e.target.value as Form["size_mode"])}>
-              <option value="fixed">每筆固定 USDT</option><option value="percent">可用餘額的 %</option>
-            </select>
-          </label>
-          <label className="field">{form.size_mode === "fixed" ? "每筆保證金 (USDT)" : "每筆使用可用餘額 (%)"}<input type="number" step="any" value={form.size_value} onChange={num("size_value")} /><small>合約實際部位 = 保證金 × 槓桿</small></label>
-          <label className="field">合約槓桿<input type="number" min={1} max={125} value={form.leverage} onChange={num("leverage")} /></label>
-          <label className="field">保證金模式
-            <select value={form.margin_mode} onChange={(e) => set("margin_mode", e.target.value as Form["margin_mode"])}>
-              <option value="isolated">逐倉 isolated</option><option value="cross">全倉 cross</option>
-            </select>
-          </label>
-          <label className="field">最大同時持倉數<input type="number" min={1} value={form.max_open_positions} onChange={num("max_open_positions")} /></label>
-          <label className="field">每日最大虧損 (USDT)<input type="number" step="any" value={form.max_daily_loss_usdt} onChange={num("max_daily_loss_usdt")} /><small>達到後自動停用 Bot</small></label>
-          <label className="field">停損 (%)<input type="number" step="any" min={0} value={form.stop_loss_pct} onChange={num("stop_loss_pct")} /><small>0 = 不設</small></label>
-          <label className="field">停利 (%)<input type="number" step="any" min={0} value={form.take_profit_pct} onChange={num("take_profit_pct")} /><small>0 = 不設</small></label>
-        </div>
-        <div className="toolbar" style={{ marginTop: 16, marginBottom: 0 }}>
-          <button className="btn primary" type="submit" disabled={save.isPending}>儲存</button>
+      <form className="card settings" onSubmit={(e) => { e.preventDefault(); save.mutate(form); }}>
+        <Section title="交易範圍" desc="限制 TradingView 訊號與自動策略可以交易哪些幣種；手動操作不受限制。">
+          <Field label="允許交易的交易對" hint="用逗號或空白分隔，例如 BTCUSDT, ETHUSDT。留空 = 全部允許">
+            <input value={form.symbols} onChange={(e) => set("symbols", e.target.value)} placeholder="BTCUSDT, ETHUSDT" />
+          </Field>
+        </Section>
+
+        <Section title="每筆下單金額" desc="每次開倉投入多少保證金。現貨不使用槓桿，投入金額即買入金額。">
+          <Field label="計算方式">
+            <Seg value={form.size_mode} onChange={(v) => set("size_mode", v)}
+              options={[["fixed", "固定金額"], ["percent", "可用餘額百分比"]]} />
+          </Field>
+          <Field
+            label={fixed ? "每筆保證金" : "每筆使用可用餘額"}
+            hint={fixed
+              ? `合約部位價值 = ${fmtNum(form.size_value, 2)} × ${lev} 倍 = ${fmtNum(form.size_value * lev, 2)} USDT`
+              : `開倉當下可用 USDT 的 ${fmtNum(form.size_value, 2)}%，合約部位價值再乘以 ${lev} 倍槓桿`}
+          >
+            <NumInput value={form.size_value} unit={fixed ? "USDT" : "%"} min={0} onChange={(v) => set("size_value", v)} />
+          </Field>
+        </Section>
+
+        <Section title="合約" desc="只套用在合約（futures）市場，開倉時設定到交易所。">
+          <Field label="槓桿倍數" hint="1–125 倍">
+            <NumInput value={form.leverage} unit="倍" min={1} max={125} step={1} onChange={(v) => set("leverage", v)} />
+          </Field>
+          <Field label="保證金模式" hint={form.margin_mode === "isolated" ? "每個部位各自計算保證金，爆倉只損失該部位" : "所有部位共用帳戶餘額當保證金"}>
+            <Seg value={form.margin_mode} onChange={(v) => set("margin_mode", v)}
+              options={[["isolated", "逐倉 Isolated"], ["cross", "全倉 Cross"]]} />
+          </Field>
+        </Section>
+
+        <Section title="風險控管" desc="開新倉前檢查，超過限制的訊號會被拒絕；平倉不受影響。">
+          <Field label="最多同時持倉" hint="現貨與合約合計；反手（先平再開）不會被擋">
+            <NumInput value={form.max_open_positions} unit="個" min={1} step={1} onChange={(v) => set("max_open_positions", v)} />
+          </Field>
+          <Field label="每日虧損上限" hint="當日（UTC 0 點起算）已實現損益扣手續費後虧損達此金額，自動停用 Bot">
+            <NumInput value={form.max_daily_loss_usdt} unit="USDT" min={0} onChange={(v) => set("max_daily_loss_usdt", v)} />
+          </Field>
+        </Section>
+
+        <Section title="停損與停利" desc="以開倉價為基準的價格變動幅度，每個部位開倉時自動算出觸發價。">
+          <Field label="停損：價格反向" hint={onMargin(form.stop_loss_pct)}>
+            <NumInput value={form.stop_loss_pct} unit="%" min={0} onChange={(v) => set("stop_loss_pct", v)} />
+          </Field>
+          <Field label="停利：價格順向" hint={onMargin(form.take_profit_pct)}>
+            <NumInput value={form.take_profit_pct} unit="%" min={0} onChange={(v) => set("take_profit_pct", v)} />
+          </Field>
+        </Section>
+
+        <div className="set-actions">
+          <button className="btn primary" type="submit" disabled={save.isPending}>儲存設定</button>
           {saved && <span className="up">已儲存 ✓</span>}
           {save.isError && <span className="error-text">{(save.error as Error).message}</span>}
         </div>
