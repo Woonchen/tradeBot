@@ -8,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..engine.executor import Executor
 from ..engine.risk import load_bot_settings
-from ..exchange.base import UnknownSymbol
-from ..models import StrategyConfig
+from ..exchange.base import UnknownSymbol, normalize_ticker
+from ..engine.performance import OwnerStats, attribute
+from ..models import Position, Signal, StrategyConfig, Trade
 from ..strategies import INTERVAL_SECONDS, REGISTRY, build_strategy
 from ..strategies.backtest import run_backtest
 from ..strategies.history import fetch_candles
@@ -55,6 +56,24 @@ async def _validate(body: StrategyBody | BacktestBody, ex: Executor) -> str:
         raise HTTPException(422, f"找不到交易對 {body.symbol}（{body.market}）")
 
 
+async def _check_one_per_symbol(s: AsyncSession, body: StrategyBody, config_id: int | None = None):
+    """同一個交易對（同一個市場）同時只能啟用一個策略。
+
+    機器人每個交易對只有一個部位，兩個策略會共用它、互相平倉，回測和實際結果都會失真。
+    """
+    if not body.enabled:
+        return
+    want = normalize_ticker(body.symbol)
+    q = select(StrategyConfig).where(StrategyConfig.enabled.is_(True), StrategyConfig.market == body.market)
+    for other in (await s.scalars(q)).all():
+        if other.id != config_id and normalize_ticker(other.symbol) == want:
+            raise HTTPException(
+                409,
+                f"「{other.name}」已經在 {want}（{'合約' if body.market == 'futures' else '現貨'}）上啟用。"
+                "同一個交易對同時只能啟用一個策略，否則它們會共用同一個部位、互相平倉；請先停用它",
+            )
+
+
 def _runner(request: Request):
     return request.app.state.strategy_runner
 
@@ -62,6 +81,33 @@ def _runner(request: Request):
 @router.get("/catalog")
 async def catalog():
     return [cls.describe() for cls in REGISTRY.values()]
+
+
+@router.get("/performance")
+async def performance(s: AsyncSession = Depends(get_session)):
+    """每個策略的實際成交績效（部位由誰開倉就算誰的，見 engine/performance.py）。"""
+    trades = (await s.scalars(select(Trade).order_by(Trade.executed_at, Trade.id))).all()
+    sig_ids = {t.signal_id for t in trades if t.signal_id}
+    signals = {x.id: x for x in (await s.scalars(select(Signal).where(Signal.id.in_(sig_ids)))).all()} if sig_ids else {}
+    stats = attribute(list(trades), signals)
+    unrealized = {(p.symbol, p.market): p.unrealized_pnl
+                  for p in (await s.scalars(select(Position).where(Position.closed_at.is_(None)))).all()}
+
+    def summary(owner) -> dict:
+        out = stats.pop(owner, OwnerStats()).summary()  # 還沒有成交的策略也列出來
+        for o in out["open"]:
+            o["unrealized"] = unrealized.get((o["symbol"], o["market"]))
+        return out
+
+    configs = (await s.scalars(select(StrategyConfig).order_by(StrategyConfig.id))).all()
+    result = [{"config": c.to_dict(), **summary(("strategy", c.id))} for c in configs]
+    labels = {"tradingview": "TradingView", "manual": "手動開倉", "other": "其他（交易所上直接操作等）"}
+    others = []
+    for owner in sorted(stats, key=str):
+        kind, name = owner
+        label = f"已刪除的策略 #{name}" if kind == "strategy" else (f"TradingView：{name}" if kind == "tradingview" else labels[kind])
+        others.append({"label": label, **summary(owner)})
+    return {"strategies": result, "others": others}
 
 
 @router.get("")
@@ -72,6 +118,7 @@ async def list_configs(s: AsyncSession = Depends(get_session)):
 @router.post("")
 async def create_config(body: StrategyBody, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor)):
     await _validate(body, ex)
+    await _check_one_per_symbol(s, body)
     cfg = StrategyConfig(**body.model_dump())
     cfg.symbol = cfg.symbol.upper()
     s.add(cfg)
@@ -91,6 +138,7 @@ async def update_config(
     if not cfg:
         raise HTTPException(404)
     await _validate(body, ex)
+    await _check_one_per_symbol(s, body, config_id)
     changed_logic = any(getattr(cfg, k) != v for k, v in body.model_dump(exclude={"name", "enabled"}).items())
     turned_on = body.enabled and not cfg.enabled
     for k, v in body.model_dump().items():

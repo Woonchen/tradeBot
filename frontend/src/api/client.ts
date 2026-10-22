@@ -90,7 +90,16 @@ export interface StrategyInfo { key: string; label: string; description: string;
 export interface StrategyConfig {
   id: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
   params: Record<string, any>; enabled: boolean; last_target: string | null;
-  last_bar_time: number | null; last_run_at: string | null; last_error: string | null;
+  last_bar_time: number | null; last_run_at: string | null; last_error: string | null; created_at: string;
+}
+export interface OpenTrip { symbol: string; market: Market; side: "long" | "short"; qty: number; opened_at: string; realized: number; fees: number; unrealized: number | null }
+export interface LivePerf {
+  trades: number; wins: number; win_rate: number | null; net: number; fees: number; profit_factor: number | null;
+  first_trade: string | null; last_trade: string | null; open: OpenTrip[];
+}
+export interface PerformanceReport {
+  strategies: ({ config: StrategyConfig } & LivePerf)[];
+  others: ({ label: string } & LivePerf)[];
 }
 export interface BacktestTrade {
   side: "long" | "short"; entry_time: number; exit_time: number; entry: number; exit: number; qty: number;
