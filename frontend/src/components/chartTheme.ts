@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 
 export interface ChartColors {
   surface: string; text: string; text2: string; grid: string; border: string;
-  up: string; down: string; warn: string; serious: string; series1: string; accent: string;
+  up: string; down: string; warn: string; serious: string; series1: string; series2: string; series3: string; series4: string; accent: string;
 }
 
 export function readColors(): ChartColors {
@@ -11,7 +11,7 @@ export function readColors(): ChartColors {
   const v = (name: string) => css.getPropertyValue(name).trim();
   return {
     surface: v("--surface"), text: v("--text"), text2: v("--text-2"), grid: v("--grid"), border: v("--border"),
-    up: v("--up"), down: v("--down"), warn: v("--warn"), serious: v("--serious"), series1: v("--series-1"),
+    up: v("--up"), down: v("--down"), warn: v("--warn"), serious: v("--serious"), series1: v("--series-1"), series2: v("--series-2"), series3: v("--series-3"), series4: v("--series-4"),
     accent: v("--accent"),
   };
 }

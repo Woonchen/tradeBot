@@ -10,6 +10,9 @@
   --text-3: #7a7974;
   --accent: #2a78d6;
   --series-1: #2a78d6;
+  --series-2: #e07b1f;
+  --series-3: #8a4fd6;
+  --series-4: #138f8f;
   --up: #0ca30c;
   --down: #d03b3b;
   --warn: #fab219;
@@ -32,6 +35,9 @@
     --text-3: #8f8e86;
     --accent: #3987e5;
     --series-1: #3987e5;
+    --series-2: #f0953f;
+    --series-3: #a77bf0;
+    --series-4: #2fb5b5;
     --up-text: #3fc43f;
     --down-text: #f07272;
     --warn-text: #fab219;
@@ -50,6 +56,9 @@
   --text-3: #8f8e86;
   --accent: #3987e5;
   --series-1: #3987e5;
+  --series-2: #f0953f;
+  --series-3: #a77bf0;
+  --series-4: #2fb5b5;
   --up-text: #3fc43f;
   --down-text: #f07272;
   --warn-text: #fab219;
@@ -135,6 +144,10 @@ label.field small { color: var(--text-3); }
 /* ---------- chart ---------- */
 .chart-box { position: relative; height: 520px; }
 .chart-box.short { height: 260px; }
+.chart-box.panes-1 { height: 620px; }
+.chart-box.panes-2 { height: 700px; }
+.chart-box.panes-3 { height: 780px; }
+.chart-legend .ind { display: flex; gap: 10px; flex-basis: 100%; }
 .chart-legend { position: absolute; top: 8px; left: 12px; z-index: 2; font-size: 12px; color: var(--text-2); pointer-events: none; display: flex; gap: 12px; flex-wrap: wrap; }
 .legend-row { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--text-2); margin-top: 8px; }
 .legend-row span { display: inline-flex; align-items: center; gap: 6px; }

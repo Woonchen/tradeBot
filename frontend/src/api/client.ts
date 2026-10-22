@@ -24,7 +24,7 @@ export interface ActivityLog {
 }
 export interface EquityPoint { ts: string; spot_usdt: number; futures_usdt: number; total_usdt: number }
 export interface BalanceRow { market: Market; asset: string; free: number; locked: number; usdt_value: number }
-export interface Candle { time: number; open: number; high: number; low: number; close: number }
+export interface Candle { time: number; open: number; high: number; low: number; close: number; volume?: number }
 export interface Summary {
   equity: number | null; equity_change_today: number; realized_today: number; realized_total: number;
   unrealized: number; open_positions: number; closed_trades: number; win_rate: number | null;
