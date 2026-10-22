@@ -34,7 +34,8 @@ class BacktestBody(BaseModel):
     market: Literal["spot", "futures"]
     interval: str
     params: dict = {}
-    bars: int = Field(1000, ge=50, le=5000)
+    bars: int = Field(1000, ge=50, le=20000)
+    compare_earlier: bool = False  # 同時回測緊接在前、一樣長的期間（驗證策略不是只適合最近的行情）
     size_mode: Literal["fixed", "percent"] | None = None
     size_value: float | None = Field(None, gt=0)
     leverage: int | None = Field(None, ge=1, le=125)
@@ -122,21 +123,34 @@ async def backtest(body: BacktestBody, s: AsyncSession = Depends(get_session), e
     symbol = await _validate(body, ex)
     bot = await load_bot_settings(s)
     strat = build_strategy(body.strategy, body.params)
-    candles = await fetch_candles(ex.adapters[body.market], symbol, body.interval, body.bars)
-    if len(candles) < 50:
-        raise HTTPException(422, "歷史 K 線不足")
-    res = run_backtest(
-        strat, candles, market=body.market,
-        size_mode=body.size_mode or bot.size_mode,
-        size_value=body.size_value or bot.size_value,
-        leverage=body.leverage or bot.leverage,
-        start_equity=body.start_equity,
+    n, warm = body.bars, strat.warmup  # 每段前面多抓 warm 根讓指標穩定，不計入結果
+    candles = await fetch_candles(
+        ex.adapters[body.market], symbol, body.interval, n * (2 if body.compare_earlier else 1) + warm,
     )
+    recent = candles[-(n + warm):]
+    recent_warm = max(0, len(recent) - n)  # 上市不久的幣，歷史不夠就少暖一點
+    if len(recent) - recent_warm < 50:
+        raise HTTPException(422, "歷史 K 線不足")
+    sizing = {
+        "market": body.market,
+        "size_mode": body.size_mode or bot.size_mode,
+        "size_value": body.size_value or bot.size_value,
+        "leverage": body.leverage or bot.leverage,
+        "start_equity": body.start_equity,
+    }
+    res = run_backtest(strat, recent, warmup=recent_warm, **sizing)
+    earlier = None
+    if body.compare_earlier and len(candles) >= 2 * n + warm:
+        earlier = run_backtest(strat, candles[-(2 * n + warm):-n], warmup=warm, **sizing).stats
     return {
         "symbol": symbol,
         "params": strat.p,
-        "candles": [c.__dict__ for c in candles],
+        "sizing": sizing,
+        "warmup": recent_warm,
+        "candles": [c.__dict__ for c in recent[recent_warm:]],
         "trades": res.trades,
         "equity": res.equity,
         "stats": res.stats,
+        # 要求了但歷史不夠時是 None，前端會說明
+        "earlier": earlier,
     }

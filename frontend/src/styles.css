@@ -141,6 +141,11 @@ label.field { display: grid; gap: 4px; font-size: 13px; color: var(--text-2); }
 label.field small { color: var(--text-3); }
 .form-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 
+/* ---------- backtest ---------- */
+.bt-panel { display: grid; gap: 12px; margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.bt-panel .form-grid input, .bt-panel .form-grid select { background: var(--surface); }
+label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+
 /* ---------- settings ---------- */
 .settings { padding: 0 20px; }
 .set-section { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; padding: 20px 0; border-bottom: 1px solid var(--grid); }

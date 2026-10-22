@@ -260,3 +260,65 @@ def test_bb_squeeze_trend_filter_blocks_breakouts_below_ema():
     start = len(wide) + len(tight)
     assert build_strategy("bb_squeeze").targets(candles_from(closes))[start] == "long"  # 預設不過濾
     assert "long" not in build_strategy("bb_squeeze", {"trend_ema": 200}).targets(candles_from(closes))  # 在 EMA200 之下不做多
+
+
+def test_backtest_warmup_skips_bars_and_waits_for_a_change():
+    c = [Candle(i, 100 + i, 100 + i, 100 + i, 100 + i, 1) for i in range(8)]
+    # 暖機 3 根；起點當下的判斷是 long（策略早就在多單裡），要等判斷改變才算
+    seq = ["flat", "long", "long", "long", "flat", "long", "long", "flat"]
+    r = run_backtest(Flip(seq), c, market="futures", size_value=100, fee_rate=0.0, warmup=3)
+    assert r.stats["bars"] == 5 and r.stats["from"] == 3  # 暖機的 K 棒不計入
+    assert [(t["entry_time"], t["exit_time"]) for t in r.trades] == [(6, 7)]  # 第 5 根轉 long → 第 6 根開盤進場
+
+    # 起點是空手就跟沒有暖機一樣，正常進場
+    r2 = run_backtest(Flip(["flat", "flat", "flat", "long", "long", "flat", "flat", "flat"]), c,
+                      market="futures", size_value=100, fee_rate=0.0, warmup=2)
+    assert [(t["entry_time"], t["exit_time"]) for t in r2.trades] == [(4, 6)]
+
+
+async def test_backtest_api_warmup_and_earlier_period(env, monkeypatch):  # noqa: F811
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api import strategies as api
+    from app.api.deps import get_executor, require_user
+    from app.db import get_session
+
+    ex, sf, ad = env
+    fetched = {}
+
+    async def fake_fetch(adapter, symbol, interval, bars):
+        fetched["bars"] = bars
+        return candles_from([100 + (i % 7) for i in range(bars)], step=900)
+
+    class Scripted(Flip):
+        warmup = 30
+
+        def __init__(self):
+            self.p = {}
+
+        def targets(self, candles):
+            return ["long" if i % 10 < 5 else "flat" for i in range(len(candles))]
+
+    monkeypatch.setattr(api, "fetch_candles", fake_fetch)
+    monkeypatch.setattr(api, "build_strategy", lambda k, p: Scripted())
+
+    async def session():
+        async with sf() as s:
+            yield s
+
+    app = FastAPI()
+    app.include_router(api.router)
+    app.dependency_overrides.update({require_user: lambda: "admin", get_executor: lambda: ex, get_session: session})
+    body = {"strategy": "x", "symbol": "BTCUSDT", "market": "futures", "interval": "15m", "bars": 200,
+            "compare_earlier": True, "size_mode": "fixed", "size_value": 500, "leverage": 3}
+    r = TestClient(app).post("/api/strategies/backtest", json=body)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert fetched["bars"] == 2 * 200 + 30  # 兩段 + 暖機
+    assert d["warmup"] == 30 and len(d["candles"]) == 200 and d["stats"]["bars"] == 200
+    assert d["sizing"] == {"market": "futures", "size_mode": "fixed", "size_value": 500, "leverage": 3, "start_equity": 10000}
+    assert d["earlier"]["bars"] == 200 and d["earlier"]["to"] < d["stats"]["from"]  # 更早那段在前面、不重疊
+
+    body["bars"] = 20001
+    assert TestClient(app).post("/api/strategies/backtest", json=body).status_code == 422

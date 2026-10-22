@@ -3,6 +3,8 @@
 - 第 i 根收盤時策略判斷改變 → 第 i+1 根「開盤價」成交（避免用收盤價成交的偷看）
 - 每次成交扣 taker 手續費；不模擬滑價、資金費率和強平
 - 下單大小規則跟機器人一樣：固定保證金或可用資金 %，合約乘上槓桿
+- warmup > 0 時，前 warmup 根只用來計算指標，不交易也不計入結果；回測起點就像那一刻啟用策略：
+  當下的判斷只記下來，要等判斷「改變」才進場（跟實際啟用一樣，不會一開始就追進既有的部位）
 """
 
 from dataclasses import dataclass, field
@@ -27,11 +29,20 @@ def run_backtest(
     leverage: int = 1,
     fee_rate: float | None = None,
     start_equity: float = 10_000,
+    warmup: int = 0,
 ) -> BacktestResult:
     if fee_rate is None:
         fee_rate = 0.001 if market == "spot" else 0.0004
     lev = max(leverage, 1) if market == "futures" else 1
     targets = [for_market(t, market) for t in strategy.targets(candles)]
+    if warmup > 0:
+        warmup = min(warmup, len(candles) - 1)
+        observed = targets[warmup - 1]  # 啟用那一刻的判斷
+        window, changed = [], False
+        for t in targets[warmup:]:
+            changed = changed or t != observed
+            window.append(t if changed else "flat")
+        candles, targets = candles[warmup:], window
 
     cash = start_equity  # 已實現的資金（含手續費）
     side: str = "flat"

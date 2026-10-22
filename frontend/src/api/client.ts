@@ -96,11 +96,21 @@ export interface BacktestTrade {
   side: "long" | "short"; entry_time: number; exit_time: number; entry: number; exit: number; qty: number;
   pnl: number; fees: number; net: number;
 }
+export interface BacktestStats {
+  start_equity: number; final_equity: number; total_return: number; max_drawdown: number; trades: number;
+  win_rate: number | null; profit_factor: number | null; fees: number; buy_hold_return: number; bars: number;
+  from: number | null; to: number | null;
+}
+export interface BacktestSizing {
+  market: Market; size_mode: "fixed" | "percent"; size_value: number; leverage: number; start_equity: number;
+}
 export interface BacktestResult {
   symbol: string; params: Record<string, any>; candles: (Candle & { volume: number })[];
   trades: BacktestTrade[]; equity: { time: number; value: number }[];
-  stats: {
-    start_equity: number; final_equity: number; total_return: number; max_drawdown: number; trades: number;
-    win_rate: number | null; profit_factor: number | null; fees: number; buy_hold_return: number; bars: number;
-  };
+  stats: BacktestStats;
+  sizing: BacktestSizing;
+  /** 前面多抓、只用來計算指標的 K 棒數（不計入結果） */
+  warmup: number;
+  /** 要求驗證更早期間時的結果；歷史不夠時是 null */
+  earlier: BacktestStats | null;
 }

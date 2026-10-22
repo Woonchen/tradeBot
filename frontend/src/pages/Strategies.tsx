@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
-  api, type BacktestResult, type BotSettings, type Market, type ParamSpec, type StrategyConfig, type StrategyInfo,
+  api, type BacktestResult, type BacktestStats, type BotSettings, type Market, type ParamSpec, type StrategyConfig, type StrategyInfo,
 } from "../api/client";
 import { BacktestChart } from "../components/BacktestChart";
 import { RuleBuilder, rulesForMarket, type Rules } from "../components/RuleBuilder";
@@ -9,7 +9,15 @@ import { EquityChart } from "../components/EquityChart";
 import { fmtNum, fmtPct, fmtPrice, fmtSigned, fmtTime, pnlClass } from "../format";
 
 const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
-const BARS = [500, 1000, 2000, 5000];
+const BARS = [1000, 5000, 10000, 20000];
+const INTERVAL_SEC: Record<string, number> = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400 };
+const approxDays = (bars: number, interval: string) => {
+  const days = (bars * INTERVAL_SEC[interval]) / 86400;
+  return days < 1 ? `約 ${Math.round(days * 24)} 小時` : `約 ${Math.round(days)} 天`;
+};
+const fmtDate = (t: number | null) => (t === null ? "—" : new Date(t * 1000).toLocaleDateString("zh-TW"));
+
+type Sizing = { size_mode: "fixed" | "percent"; size_value: number; leverage: number; start_equity: number };
 const TARGET_ZH: Record<string, string> = { long: "▲ 多", short: "▼ 空", flat: "空手" };
 
 type Draft = {
@@ -51,14 +59,55 @@ function ParamField({ spec, value, onChange }: { spec: ParamSpec; value: number 
   );
 }
 
-function BacktestView({ result }: { result: BacktestResult }) {
+/** 最近期間 vs 更早期間：兩段都不賠，才比較能相信策略不是剛好配合了某段行情。 */
+function PeriodCompare({ recent, earlier }: { recent: BacktestStats; earlier: BacktestStats }) {
+  const rows: [string, BacktestStats][] = [["更早期間", earlier], ["最近期間", recent]];
+  const pf = (x: BacktestStats) => (x.profit_factor === null ? "—" : fmtNum(x.profit_factor));
+  const verdict = earlier.total_return >= 0 && recent.total_return >= 0
+    ? <span className="up">兩段都沒有虧損 ✓</span>
+    : <span className="down">至少一段虧損：策略可能只適合特定行情，建議不要直接用真錢</span>;
+  return (
+    <div className="card">
+      <h2>期間驗證</h2>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>期間</th><th>日期</th><th className="num">策略報酬</th><th className="num">獲利因子</th><th className="num">勝率</th><th className="num">交易</th><th className="num">最大回撤</th><th className="num">同期幣價</th></tr></thead>
+          <tbody>{rows.map(([label, x]) => (
+            <tr key={label}>
+              <td>{label}</td>
+              <td className="muted">{fmtDate(x.from)} ～ {fmtDate(x.to)}</td>
+              <td className={`num ${pnlClass(x.total_return)}`}>{fmtSigned(x.total_return * 100)}%</td>
+              <td className="num">{pf(x)}</td>
+              <td className="num">{fmtPct(x.win_rate)}</td>
+              <td className="num">{x.trades}</td>
+              <td className="num">{fmtPct(x.max_drawdown)}</td>
+              <td className={`num ${pnlClass(x.buy_hold_return)}`}>{fmtSigned(x.buy_hold_return * 100)}%</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+      <p style={{ margin: "10px 0 0", fontSize: 13 }}>{verdict}</p>
+    </div>
+  );
+}
+
+function BacktestView({ result, compareRequested }: { result: BacktestResult; compareRequested: boolean }) {
   const s = result.stats;
+  const z = result.sizing;
   const tile = (label: string, value: string, cls = "", sub?: string) => (
     <div className="card tile"><div className="label">{label}</div><div className={`value ${cls}`}>{value}</div>{sub && <div className="sub">{sub}</div>}</div>
   );
   const equity = result.equity.map((p) => ({ ts: new Date(p.time * 1000).toISOString(), total_usdt: p.value, spot_usdt: 0, futures_usdt: 0 }));
   return (
     <div className="grid" style={{ marginTop: 16 }}>
+      <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+        {fmtDate(s.from)} ～ {fmtDate(s.to)}，{s.bars} 根 K 棒；
+        {z.size_mode === "fixed" ? `每筆 ${fmtNum(z.size_value)} USDT 保證金` : `每筆用可用資金 ${z.size_value}%`}
+        {z.market === "futures" && ` × ${z.leverage} 倍槓桿`}，起始 {fmtNum(z.start_equity)} USDT。
+        {result.warmup > 0 && ` 另外多抓前面 ${result.warmup} 根讓指標穩定，不計入結果；起點當下若已在部位內，要等判斷改變才進場（跟實際啟用一樣）。`}
+      </p>
+      {result.earlier && <PeriodCompare recent={s} earlier={result.earlier} />}
+      {compareRequested && !result.earlier && <p className="muted" style={{ margin: 0 }}>歷史資料不夠長，無法驗證更早的同長度期間。</p>}
       <div className="tiles" style={{ marginBottom: 0 }}>
         {tile("策略報酬", `${fmtSigned(s.total_return * 100)}%`, pnlClass(s.total_return), `${fmtNum(s.start_equity)} → ${fmtNum(s.final_equity)} USDT`)}
         {tile("最大回撤", fmtPct(s.max_drawdown))}
@@ -102,13 +151,19 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
   const qc = useQueryClient();
   const bot = useQuery({ queryKey: ["bot"], queryFn: () => api<BotSettings>("/api/bot") });
   const [d, setD] = useState<Draft>(initial);
-  const [bars, setBars] = useState(1000);
+  const [bars, setBars] = useState(5000);
+  const [compare, setCompare] = useState(true);
+  const [sizing, setSizing] = useState<Sizing | null>(null); // null = 照「設定」頁
   const info = catalog.find((c) => c.key === d.strategy)!;
+  const setSz = <K extends keyof Sizing>(k: K, v: Sizing[K]) => sizing && setSizing({ ...sizing, [k]: v });
 
   const backtest = useMutation({
-    mutationFn: () => api<BacktestResult>("/api/strategies/backtest", {
+    mutationFn: (req: { compare: boolean }) => api<BacktestResult>("/api/strategies/backtest", {
       method: "POST",
-      body: JSON.stringify({ strategy: d.strategy, symbol: d.symbol, market: d.market, interval: d.interval, params: cleanParams(info, d.params, d.market), bars }),
+      body: JSON.stringify({
+        strategy: d.strategy, symbol: d.symbol, market: d.market, interval: d.interval,
+        params: cleanParams(info, d.params, d.market), bars, compare_earlier: req.compare, ...(sizing ?? {}),
+      }),
     }),
   });
   const save = useMutation({
@@ -159,29 +214,71 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
         <RuleBuilder key={p.name} market={d.market} value={d.params[p.name] ?? p.default}
           onChange={(v) => set("params", { ...d.params, [p.name]: v })} />
       ))}
-      <div className="toolbar" style={{ marginTop: 16, marginBottom: 0 }}>
-        <label className="field" style={{ display: "flex", alignItems: "center", gap: 6 }}>回測
-          <select value={bars} onChange={(e) => setBars(Number(e.target.value))}>
-            {BARS.map((b) => <option key={b} value={b}>最近 {b} 根</option>)}
-          </select>
+      <div className="bt-panel">
+        <h2 style={{ margin: 0 }}>回測</h2>
+        <div className="form-grid">
+          <label className="field">期間
+            <select value={bars} onChange={(e) => setBars(Number(e.target.value))}>
+              {BARS.map((b) => <option key={b} value={b}>最近 {b.toLocaleString()} 根（{approxDays(b, d.interval)}）</option>)}
+            </select>
+            <small>越長越可靠；20,000 根約需 10–30 秒</small>
+          </label>
+          <label className="field">下單金額
+            <select value={sizing ? "custom" : "bot"} onChange={(e) => setSizing(e.target.value === "bot" || !bot.data ? null : {
+              size_mode: bot.data.size_mode, size_value: bot.data.size_value, leverage: bot.data.leverage, start_equity: 10000,
+            })}>
+              <option value="bot">照「設定」頁</option>
+              <option value="custom">自訂</option>
+            </select>
+            {!sizing && bot.data && (
+              <small>
+                {bot.data.size_mode === "fixed" ? `每筆 ${bot.data.size_value} USDT 保證金` : `可用資金的 ${bot.data.size_value}%`}
+                {d.market === "futures" && ` × ${bot.data.leverage} 倍槓桿`}，起始 10,000 USDT
+              </small>
+            )}
+          </label>
+          {sizing && (
+            <>
+              <label className="field">計算方式
+                <select value={sizing.size_mode} onChange={(e) => setSz("size_mode", e.target.value as Sizing["size_mode"])}>
+                  <option value="fixed">每筆固定 USDT</option><option value="percent">可用資金 %</option>
+                </select>
+              </label>
+              <label className="field">{sizing.size_mode === "fixed" ? "每筆保證金（USDT）" : "每筆使用可用資金（%）"}
+                <input type="number" min={0} step="any" value={sizing.size_value} onChange={(e) => setSz("size_value", Number(e.target.value))} />
+              </label>
+              {d.market === "futures" && (
+                <label className="field">槓桿（倍）
+                  <input type="number" min={1} max={125} step={1} value={sizing.leverage} onChange={(e) => setSz("leverage", Number(e.target.value))} />
+                </label>
+              )}
+              <label className="field">起始資金（USDT）
+                <input type="number" min={1} step="any" value={sizing.start_equity} onChange={(e) => setSz("start_equity", Number(e.target.value))} />
+              </label>
+            </>
+          )}
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={compare} onChange={(e) => setCompare(e.target.checked)} />
+          同時回測更早、一樣長的期間（驗證策略不是只適合最近的行情）
         </label>
-        <button className="btn" disabled={backtest.isPending} onClick={() => backtest.mutate()}>
-          {backtest.isPending ? "回測中…" : "執行回測"}
-        </button>
+        <div className="toolbar" style={{ margin: 0 }}>
+          <button className="btn" disabled={backtest.isPending} onClick={() => backtest.mutate({ compare })}>
+            {backtest.isPending ? "回測中…" : "執行回測"}
+          </button>
+          <span className="muted" style={{ fontSize: 12 }}>指標會自動多抓前面的歷史暖機，不計入結果</span>
+        </div>
+      </div>
+      <div className="toolbar" style={{ marginTop: 16, marginBottom: 0 }}>
+        <span className="muted" style={{ fontSize: 12 }}>實際下單使用「設定」頁的下單規則。啟用後會等策略判斷「改變」時才下單，不會立刻進場。</span>
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={onDone}>取消</button>
         <button className="btn" disabled={save.isPending} onClick={() => save.mutate(false)}>儲存（停用）</button>
         <button className="btn primary" disabled={save.isPending} onClick={() => save.mutate(true)}>儲存並啟用</button>
       </div>
-      {bot.data && (
-        <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
-          回測與實際下單都使用「設定」頁的下單規則：{bot.data.size_mode === "fixed" ? `每筆 ${bot.data.size_value} USDT 保證金` : `可用資金的 ${bot.data.size_value}%`}
-          {d.market === "futures" && ` × ${bot.data.leverage} 倍槓桿`}。啟用後會等策略判斷「改變」時才下單，不會立刻進場。
-        </p>
-      )}
       {backtest.isError && <p className="error-text">{(backtest.error as Error).message}</p>}
       {save.isError && <p className="error-text">{(save.error as Error).message}</p>}
-      {backtest.data && <BacktestView result={backtest.data} />}
+      {backtest.data && <BacktestView result={backtest.data} compareRequested={backtest.variables?.compare ?? false} />}
     </div>
   );
 }
