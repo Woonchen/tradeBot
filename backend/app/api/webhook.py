@@ -4,8 +4,9 @@ import json
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, ValidationError
+from starlette.requests import ClientDisconnect
 
 from ..config import settings
 from ..engine.executor import Executor
@@ -56,7 +57,11 @@ async def tradingview_webhook(request: Request, executor: Executor = Depends(get
     if allow and client_ip(request) not in allow:
         raise HTTPException(403, "IP not allowed")
 
-    body = await request.body()
+    try:
+        body = await request.body()
+    except ClientDisconnect:
+        # 請求超過 Caddy 的大小上限時，Caddy 會在轉發途中切斷連線；對方已經不在，不用回應也不必印錯誤
+        return Response(status_code=400)
     try:
         payload = WebhookPayload.model_validate(json.loads(body))
     except json.JSONDecodeError:

@@ -181,3 +181,17 @@ def test_webhook_rejects_oversized_fields_without_echoing_input(monkeypatch):
 
     r = c.post("/webhook/tradingview", json={"secret": "s"})
     assert r.json()["detail"] == "payload 欄位不正確：action, symbol"
+
+
+async def test_webhook_client_disconnect_is_quiet(monkeypatch):
+    """讀 body 時連線被切斷（例如 Caddy 擋下超大請求）：直接結束，不丟例外。"""
+    from app.api import webhook
+
+    monkeypatch.setattr(settings, "webhook_ip_allowlist", "")
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    request = Request({"type": "http", "method": "POST", "headers": [], "client": ("172.18.0.5", 1)}, receive)
+    resp = await webhook.tradingview_webhook(request, executor=None)
+    assert resp.status_code == 400
