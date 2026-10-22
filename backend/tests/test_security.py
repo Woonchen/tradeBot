@@ -1,7 +1,13 @@
+import asyncio
+import json
+import re
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.requests import Request
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.api import auth
 from app.api.deps import client_ip
@@ -26,6 +32,33 @@ def req(xff: str | None, peer: str = "172.18.0.5") -> Request:
 )
 def test_client_ip_ignores_spoofed_left_entries(xff, peer, expected):
     assert client_ip(req(xff, peer)) == expected
+
+
+def dockerfile_trusted_proxies() -> str:
+    cmd = re.search(r"^CMD (\[.*\])", (Path(__file__).parents[1] / "Dockerfile").read_text(), re.M).group(1)
+    args = json.loads(cmd)
+    return args[args.index("--forwarded-allow-ips") + 1]
+
+
+@pytest.mark.parametrize(
+    "xff,expected",
+    [
+        ("52.89.214.238", "52.89.214.238"),
+        ("52.89.214.238, 1.2.3.4", "1.2.3.4"),            # 偽造最左邊的 TradingView IP
+        ("52.89.214.238, 1.2.3.4, 172.18.0.3", "1.2.3.4"),  # 再經過一層內網代理
+    ],
+)
+def test_client_ip_through_uvicorn_proxy_headers(xff, expected):
+    """經過正式環境同樣設定的 uvicorn --proxy-headers，仍然拿到真實 IP，不會被偽造的 X-Forwarded-For 騙過。"""
+    seen = {}
+
+    async def app(scope, receive, send):
+        seen["ip"] = client_ip(Request(scope))
+
+    mw = ProxyHeadersMiddleware(app, trusted_hosts=dockerfile_trusted_proxies())
+    scope = {"type": "http", "headers": [(b"x-forwarded-for", xff.encode())], "client": ("172.18.0.5", 1234)}
+    asyncio.run(mw(scope, None, None))
+    assert seen["ip"] == expected
 
 
 def test_insecure_secrets():
