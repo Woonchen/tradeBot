@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .api import auth, bot, history, market, portfolio, strategies, webhook, ws
+from .api.totp import decode_secret
 from .config import settings
 from .db import SessionLocal, engine
 from .engine.executor import Executor
@@ -22,6 +23,8 @@ log = logging.getLogger(__name__)
 
 def check_secrets():
     """連到 Binance（Demo 或正式）時，密鑰不能是預設值，否則拒絕啟動；Paper 模擬只警告。"""
+    if settings.dashboard_totp_secret:
+        decode_secret(settings.dashboard_totp_secret)  # 金鑰打錯就拒絕啟動，不要變成誰都登不進去
     weak = settings.insecure_secrets()
     if not weak:
         return

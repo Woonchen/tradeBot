@@ -244,6 +244,9 @@ docker start tradebot-backend-1 && rm /tmp/restore.dump
 - Binance API key **只開「讀取 + 交易」，不要開提領**，並設定 IP 白名單（VPS 的 IP）
 - `.env` 已列在 `.gitignore`，不要 commit
 - 一定要改 `WEBHOOK_SECRET`、`DASHBOARD_PASSWORD`、`JWT_SECRET`
+- 開啟儀表板的兩步驟驗證：在自己的電腦執行 `uv run deploy/setup-2fa.py`，它會產生金鑰寫進 VM 的 `.env`、重啟後端，
+  並在桌面存一張 QR code 圖片給驗證器 App（Google Authenticator、1Password 等）掃描，掃完請刪除圖片。
+  手機遺失時用 `uv run deploy/setup-2fa.py --disable` 先關閉，再重新設定
 - 可以設定 `WEBHOOK_IP_ALLOWLIST` 只接受 TradingView 的 IP（以 TradingView 官方文件為準，目前是 `52.89.214.238,34.212.75.30,54.218.53.128,52.32.178.7`）
 - 先在 paper → Demo Trading 穩定跑一段時間，再用小額資金上正式帳戶
 

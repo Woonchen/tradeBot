@@ -14,8 +14,9 @@ bearer = HTTPBearer(auto_error=False)
 
 
 def _password_version() -> str:
-    """目前密碼的指紋。放進 token，改了 DASHBOARD_PASSWORD 之後舊 token 就自動失效。"""
-    return hmac.new(settings.jwt_secret.encode(), settings.dashboard_password.encode(), hashlib.sha256).hexdigest()[:16]
+    """目前登入憑證的指紋。放進 token，改了密碼或兩步驟驗證金鑰之後，舊 token 就自動失效。"""
+    material = f"{settings.dashboard_password}\0{settings.dashboard_totp_secret}".encode()
+    return hmac.new(settings.jwt_secret.encode(), material, hashlib.sha256).hexdigest()[:16]
 
 
 def create_token(username: str) -> str:

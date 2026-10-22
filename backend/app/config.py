@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     dashboard_password: str = "change-me"
     jwt_secret: str = "change-me-too"
     jwt_ttl_hours: int = 24
+    # 設定後登入要再輸入驗證器 App 的 6 位數驗證碼（Base32 金鑰；產生方式見 deploy/setup-2fa.py）
+    dashboard_totp_secret: str = ""
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

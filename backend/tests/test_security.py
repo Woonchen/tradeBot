@@ -1,4 +1,5 @@
 import asyncio
+import time
 import json
 import re
 from pathlib import Path
@@ -195,3 +196,67 @@ async def test_webhook_client_disconnect_is_quiet(monkeypatch):
     request = Request({"type": "http", "method": "POST", "headers": [], "client": ("172.18.0.5", 1)}, receive)
     resp = await webhook.tradingview_webhook(request, executor=None)
     assert resp.status_code == 400
+
+
+# ------------------------------------------------------------------ 兩步驟驗證
+@pytest.mark.parametrize(
+    "t,expected",  # RFC 6238 附錄 B 的 SHA1 測試向量
+    [(59, "94287082"), (1111111109, "07081804"), (1111111111, "14050471"),
+     (1234567890, "89005924"), (2000000000, "69279037"), (20000000000, "65353130")],
+)
+def test_totp_rfc6238_vectors(t, expected):
+    from app.api.totp import STEP, code_at
+
+    assert code_at(b"12345678901234567890", t // STEP, digits=8) == expected
+
+
+def test_totp_match_window_and_format():
+    import base64
+
+    from app.api.totp import STEP, code_at, decode_secret, match
+
+    secret = base64.b32encode(b"12345678901234567890").decode().rstrip("=")
+    key = decode_secret(secret)
+    now = 1_700_000_000
+    step = now // STEP
+    assert match(secret, code_at(key, step), now) == step
+    assert match(secret, code_at(key, step - 1), now) == step - 1  # 允許 30 秒時鐘誤差
+    assert match(secret, code_at(key, step - 2), now) is None
+    assert match(secret, "12 34 5", now) is None and match(secret, "abcdef", now) is None
+    with pytest.raises(ValueError):
+        decode_secret("not base32!")
+    with pytest.raises(ValueError):
+        decode_secret("AAAA")  # 太短
+
+
+def test_login_requires_totp_code_once(monkeypatch):
+    import base64
+
+    from app.api.deps import verify_token
+    from app.api.totp import STEP, code_at
+
+    secret = base64.b32encode(b"tradebot-test-secret").decode()
+    monkeypatch.setattr(settings, "dashboard_user", "admin")
+    monkeypatch.setattr(settings, "dashboard_password", "right-password")
+    monkeypatch.setattr(settings, "dashboard_totp_secret", "")
+    monkeypatch.setattr(auth, "_failures", {})
+    monkeypatch.setattr(auth, "_last_totp_step", -1)
+    app = FastAPI()
+    app.include_router(auth.router)
+    c = TestClient(app, client=("172.18.0.5", 50000))
+
+    def login(code="", ip="1.2.3.4"):
+        body = {"username": "admin", "password": "right-password", "code": code}
+        return c.post("/api/auth/login", json=body, headers={"x-forwarded-for": ip})
+
+    old_token = login().json()["token"]  # 還沒啟用：只要密碼
+    monkeypatch.setattr(settings, "dashboard_totp_secret", secret)
+    assert c.get("/api/auth/config").json() == {"totp": True}
+    assert verify_token(old_token) is None  # 啟用後舊 token 全部失效
+
+    r = login()
+    assert r.status_code == 401 and "驗證碼" in r.json()["detail"]
+    code = code_at(base64.b32decode(secret), int(time.time()) // STEP)
+    r = login(code, ip="5.6.7.8")
+    assert r.status_code == 200 and verify_token(r.json()["token"]) == "admin"
+    assert login(code, ip="9.9.9.9").status_code == 401  # 同一組碼不能再用
