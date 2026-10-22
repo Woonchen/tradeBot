@@ -10,6 +10,18 @@
 # 預設 :80 只適合本機或放在 ngrok / cloudflared 後面
 {$SITE_ADDRESS::80} {
 	encode gzip
+	header {
+		# 不准其他網站用 iframe 嵌入（避免點擊劫持，例如誘騙按下「緊急全部平倉」）
+		# 只載入自己網域的程式；React 與圖表會設定行內 style，所以 style 需要 'unsafe-inline'
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' wss://{host} ws://{host}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# 只有經由 HTTPS 送到瀏覽器時才會生效
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
 	handle /api/* {
 		reverse_proxy backend:8000
 	}

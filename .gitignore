@@ -1,4 +1,9 @@
+# 環境變數與金鑰：deploy/gcp-deploy.sh 會上傳所有沒被忽略的檔案，這些絕不能進 git 或被帶上 VM
 .env
+.env.*
+!.env.example
+*.pem
+*.key
 __pycache__/
 *.pyc
 .venv/

@@ -89,3 +89,72 @@ def test_login_locks_after_repeated_failures(monkeypatch):
     auth._failures["1.2.3.4"] = [t - auth.WINDOW for t in auth._failures["1.2.3.4"]]
     assert login("right-password").status_code == 200
     assert "1.2.3.4" not in auth._failures
+
+
+# ------------------------------------------------------------------ token 與 WebSocket
+def ws_app():
+    from types import SimpleNamespace
+
+    from app.api import ws
+
+    class Hub:
+        status = {"spot": True}
+
+        async def unwatch_chart(self, client):
+            pass
+
+    app = FastAPI()
+    app.include_router(ws.router)
+    app.state.executor = SimpleNamespace(bus=SimpleNamespace(clients=set()))
+    app.state.hub = Hub()
+    return app
+
+
+def test_token_invalid_after_password_change(monkeypatch):
+    from app.api.deps import create_token, verify_token
+
+    monkeypatch.setattr(settings, "dashboard_password", "old-password")
+    token = create_token("admin")
+    assert verify_token(token) == "admin"
+    monkeypatch.setattr(settings, "dashboard_password", "new-password")
+    assert verify_token(token) is None
+
+
+def test_ws_requires_auth_message():
+    from starlette.websockets import WebSocketDisconnect
+
+    from app.api.deps import create_token
+
+    c = TestClient(ws_app())
+    with c.websocket_connect("/ws") as ws:
+        ws.send_text('{"op":"auth","token":"' + create_token("admin") + '"}')
+        assert ws.receive_json()["type"] == "stream_status"
+
+    for first in ['{"op":"auth","token":"bad"}', '{"op":"chart","symbol":"BTCUSDT"}', "ping"]:
+        with c.websocket_connect("/ws") as ws:
+            ws.send_text(first)
+            with pytest.raises(WebSocketDisconnect) as e:
+                ws.receive_json()
+            assert e.value.code == 4401
+
+
+def test_ws_closes_when_token_expires(monkeypatch):
+    import jwt
+    from starlette.websockets import WebSocketDisconnect
+
+    from app.api import deps
+
+    real_encode = jwt.encode
+
+    def short_lived(claims, *a, **k):  # 1 秒後過期
+        import time
+
+        return real_encode({**claims, "exp": int(time.time()) + 1}, *a, **k)
+
+    monkeypatch.setattr(deps.jwt, "encode", short_lived)
+    with TestClient(ws_app()).websocket_connect("/ws") as ws:
+        ws.send_text('{"op":"auth","token":"' + deps.create_token("admin") + '"}')
+        ws.receive_json()
+        with pytest.raises(WebSocketDisconnect) as e:
+            ws.receive_json()
+        assert e.value.code == 4401

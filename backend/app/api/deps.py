@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import ipaddress
 from datetime import datetime, timedelta, timezone
 
@@ -11,18 +13,32 @@ from ..engine.executor import Executor
 bearer = HTTPBearer(auto_error=False)
 
 
+def _password_version() -> str:
+    """目前密碼的指紋。放進 token，改了 DASHBOARD_PASSWORD 之後舊 token 就自動失效。"""
+    return hmac.new(settings.jwt_secret.encode(), settings.dashboard_password.encode(), hashlib.sha256).hexdigest()[:16]
+
+
 def create_token(username: str) -> str:
     exp = datetime.now(timezone.utc) + timedelta(hours=settings.jwt_ttl_hours)
-    return jwt.encode({"sub": username, "exp": exp}, settings.jwt_secret, algorithm="HS256")
+    return jwt.encode({"sub": username, "exp": exp, "pv": _password_version()}, settings.jwt_secret, algorithm="HS256")
 
 
-def verify_token(token: str | None) -> str | None:
+def decode_token(token: str | None) -> dict | None:
+    """驗證通過時回傳 token 內容（含 sub、exp），否則 None。"""
     if not token:
         return None
     try:
-        return jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])["sub"]
+        claims = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"], options={"require": ["exp", "sub"]})
     except jwt.PyJWTError:
         return None
+    if not hmac.compare_digest(str(claims.get("pv", "")), _password_version()):
+        return None
+    return claims
+
+
+def verify_token(token: str | None) -> str | None:
+    claims = decode_token(token)
+    return claims["sub"] if claims else None
 
 
 def require_user(cred: HTTPAuthorizationCredentials | None = Depends(bearer)) -> str:

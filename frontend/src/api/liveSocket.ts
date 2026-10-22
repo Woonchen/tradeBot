@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { getToken } from "./client";
+import { getToken, setToken } from "./client";
 
 export interface LiveMessage { type: string; data: any; log: unknown }
 export interface ChartSub { symbol: string; market: string; interval: string }
@@ -38,9 +38,11 @@ class LiveSocket {
 
   private connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(getToken() ?? "")}`);
+    // token 用第一則訊息送，不放在網址：網址會被反向代理與伺服器的存取 log 記下來
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
     this.ws = ws;
     ws.onopen = () => {
+      ws.send(JSON.stringify({ op: "auth", token: getToken() ?? "" }));
       this.setConnected(true);
       this.ping = setInterval(() => ws.send("ping"), 25_000);
       if (this.chart) this.send({ op: "chart", ...this.chart });
@@ -53,9 +55,15 @@ class LiveSocket {
       }
       this.handlers.forEach((h) => h(msg));
     };
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       clearInterval(this.ping);
       this.setConnected(false);
+      if (e.code === 4401) {
+        // token 過期或密碼已更換：回到登入頁，不要一直重連
+        this.running = false;
+        setToken(null);
+        return;
+      }
       if (this.running && this.ws === ws) this.retry = setTimeout(() => this.connect(), 3000);
     };
   }
