@@ -6,7 +6,7 @@ import time
 
 from sqlalchemy import select
 
-from ..engine.executor import Executor
+from ..engine.executor import Executor, get_open_position
 from ..exchange.base import UnknownSymbol
 from ..models import StrategyConfig, utcnow
 from ..strategies import INTERVAL_SECONDS, build_strategy, for_market
@@ -95,6 +95,16 @@ class StrategyRunner:
             return
         await self.bus.emit("strategy", cfg.to_dict())
         if target != prev:
+            if target == "flat":
+                # 策略啟用時不會跟著進場，之後判斷轉回空手時帳上可能根本沒有部位，送出去也只會被拒絕
+                async with self.ex.sf() as s:
+                    pos = await get_open_position(s, symbol, cfg.market)
+                if pos is None:
+                    await self.bus.emit(
+                        "strategy", cfg.to_dict(), category="signal",
+                        message=f"策略「{cfg.name}」判斷轉為空手（原本 {prev}），目前沒有部位，略過不送訊號",
+                    )
+                    return
             await self.ex.submit(
                 source="strategy", strategy=cfg.name, ticker=cfg.symbol, market=cfg.market,
                 action=target, target=target, price=bar.close,

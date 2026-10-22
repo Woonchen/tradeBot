@@ -164,11 +164,47 @@ async def test_runner_only_trades_on_change(env, monkeypatch):  # noqa: F811
     assert cfg.last_target == "flat" and cfg.last_error is None
 
 
+async def test_runner_skips_flat_without_position(env, monkeypatch):  # noqa: F811
+    """啟用時判斷是持倉（沒有下單），之後轉回空手：帳上沒部位，不送訊號。"""
+    ex, sf, ad = env
+    sec = INTERVAL_SECONDS["1h"]
+    now_bar = int(time.time()) // sec * sec
+    seq = iter(["long", "flat", "short"])
+    bars = {"n": 3}
+
+    async def fake_fetch(adapter, symbol, interval, n):
+        bars["n"] += 1
+        return [Candle(now_bar - 1000 * sec + i * sec, 100, 100, 100, 100, 1) for i in range(bars["n"])]
+
+    class Scripted:
+        warmup = 10
+
+        def targets(self, candles):
+            return [next(seq)] * len(candles)
+
+    monkeypatch.setattr("app.workers.strategy_runner.fetch_candles", fake_fetch)
+    monkeypatch.setattr("app.workers.strategy_runner.build_strategy", lambda k, p: Scripted())
+    async with sf() as s:
+        s.add(StrategyConfig(name="t", strategy="ema_cross", symbol="BTCUSDT", market="futures",
+                             interval="1h", params={}, enabled=True))
+        await s.commit()
+    runner = StrategyRunner(ex)
+    for _ in range(3):
+        await runner.evaluate(1)
+        while not ex.queue.empty():
+            await ex.process(await ex.queue.get())
+    async with sf() as s:
+        sigs = (await s.scalars(select(Signal).order_by(Signal.id))).all()
+        cfg = await s.get(StrategyConfig, 1)
+    assert [(x.target, x.status) for x in sigs] == [("short", "executed")]
+    assert cfg.last_target == "short"
+
+
 async def test_runner_spot_maps_short_to_flat(env, monkeypatch):  # noqa: F811
     ex, sf, ad = env
     sec = INTERVAL_SECONDS["1h"]
     now_bar = int(time.time()) // sec * sec
-    seq = iter(["long", "short"])
+    seq = iter(["flat", "long", "short"])
     bars = {"n": 3}
 
     async def fake_fetch(adapter, symbol, interval, n):
@@ -188,8 +224,10 @@ async def test_runner_spot_maps_short_to_flat(env, monkeypatch):  # noqa: F811
                              interval="1h", params={}, enabled=True))
         await s.commit()
     runner = StrategyRunner(ex)
-    await runner.evaluate(1)
-    await runner.evaluate(1)
+    for _ in range(3):
+        await runner.evaluate(1)
+        while not ex.queue.empty():
+            await ex.process(await ex.queue.get())
     async with sf() as s:
-        sig = (await s.scalars(select(Signal))).one()
-    assert sig.target == "flat"
+        sigs = (await s.scalars(select(Signal).order_by(Signal.id))).all()
+    assert [(x.target, x.status) for x in sigs] == [("long", "executed"), ("flat", "executed")]
