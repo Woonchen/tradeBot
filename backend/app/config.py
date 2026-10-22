@@ -30,5 +30,14 @@ class Settings(BaseSettings):
     position_sync_seconds: int = 15
     order_sync_seconds: int = 20
 
+    def insecure_secrets(self) -> list[str]:
+        """還是預設值或空白的密鑰。空白的 webhook secret 會讓任何人送空字串就通過驗證。"""
+        defaults = Settings.model_fields
+        return [
+            name.upper()
+            for name in ("webhook_secret", "dashboard_password", "jwt_secret")
+            if not getattr(self, name).strip() or getattr(self, name) == defaults[name].default
+        ]
+
 
 settings = Settings()

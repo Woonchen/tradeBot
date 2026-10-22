@@ -18,10 +18,23 @@ from .workers.strategy_runner import StrategyRunner
 from .workers.sync import SyncWorkers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger(__name__)
+
+
+def check_secrets():
+    """連到 Binance（Demo 或正式）時，密鑰不能是預設值，否則拒絕啟動；Paper 模擬只警告。"""
+    weak = settings.insecure_secrets()
+    if not weak:
+        return
+    msg = f"{', '.join(weak)} 仍是預設值或空白，請在 .env 設定成隨機字串"
+    if settings.execution_mode == "binance":
+        raise RuntimeError(f"拒絕啟動：{msg}")
+    log.warning("%s（Paper 模式暫時允許）", msg)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    check_secrets()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with SessionLocal() as s:

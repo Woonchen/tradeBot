@@ -9,7 +9,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..config import settings
 from ..engine.executor import Executor
-from .deps import get_executor
+from .deps import client_ip, get_executor
 
 router = APIRouter(tags=["webhook"])
 
@@ -47,11 +47,6 @@ def dedupe_key(p: WebhookPayload, body: bytes) -> str:
     else:  # 沒有時間戳時，同一分鐘內內容完全相同視為重複
         raw = body.decode(errors="ignore") + datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
     return hashlib.sha256(raw.encode()).hexdigest()
-
-
-def client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
 
 
 @router.post("/webhook/tradingview")

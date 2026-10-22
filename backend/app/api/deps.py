@@ -1,3 +1,4 @@
+import ipaddress
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -29,6 +30,30 @@ def require_user(cred: HTTPAuthorizationCredentials | None = Depends(bearer)) ->
     if not user:
         raise HTTPException(401, "未登入或登入已過期")
     return user
+
+
+def _is_proxy(ip: str) -> bool:
+    """內網／本機位址視為我們自己的反向代理（Caddy、共用機器上的既有代理）。"""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback
+
+
+def client_ip(request: Request) -> str:
+    """請求的真實來源 IP。
+
+    X-Forwarded-For 最左邊的值是發送端自己填的，可以偽造；每一層反向代理只會往右邊追加，
+    所以從右往左找第一個不是內網的位址，才是最外層代理實際看到的連線來源。
+    """
+    peer = request.client.host if request.client else ""
+    hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",") if h.strip()]
+    chain = [*hops, peer] if peer else hops
+    for ip in reversed(chain):
+        if not _is_proxy(ip):
+            return ip
+    return chain[0] if chain else ""  # 全部都是內網：本機開發或內網直連
 
 
 def get_executor(request: Request) -> Executor:
