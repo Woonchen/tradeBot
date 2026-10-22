@@ -231,3 +231,21 @@ async def test_runner_spot_maps_short_to_flat(env, monkeypatch):  # noqa: F811
     async with sf() as s:
         sigs = (await s.scalars(select(Signal).order_by(Signal.id))).all()
     assert [(x.target, x.status) for x in sigs] == [("long", "executed"), ("flat", "executed")]
+
+
+def test_bb_squeeze_enters_on_breakout_after_squeeze_and_exits_below_middle():
+    wide = [100 + (8 if i % 2 else -8) for i in range(150)]  # 大幅震盪：寬度大
+    tight = [100 + (0.3 if i % 2 else -0.3) for i in range(60)]  # 盤整：寬度遠低於平均
+    breakout = [101, 103, 106, 110, 115]  # 擴張並上穿上軌
+    fall = [114, 111, 107, 103, 99, 96, 94, 93]  # 回落到中軌下方、通道開始縮小
+    closes = wide + tight + breakout + fall
+    s = build_strategy("bb_squeeze")
+    t = s.targets(candles_from(closes))
+    start = len(wide) + len(tight)
+    assert set(t[:start]) == {"flat"}  # 盤整中、大幅震盪中都不進場
+    assert t[start] == "long"  # 第一根突破就進場
+    assert t[-1] == "flat" and "short" not in t  # 跌回中軌下方出場；只做多
+
+    # 沒有先盤整：同樣的突破不進場
+    t2 = s.targets(candles_from(wide + breakout + fall))
+    assert "long" not in t2
