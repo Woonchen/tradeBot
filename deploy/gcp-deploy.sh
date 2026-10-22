@@ -21,7 +21,9 @@ fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-(cd "$ROOT" && git ls-files -z --cached --others --exclude-standard | tar --null -T - -czf "$TMP/tradebot.tar.gz")
+# macOS 的 tar 預設會把檔案屬性一起打包：COPYFILE_DISABLE 不產生 ._ 開頭的附帶檔，--no-xattrs 不寫延伸屬性
+(cd "$ROOT" && git ls-files -z --cached --others --exclude-standard |
+  COPYFILE_DISABLE=1 tar --no-xattrs --null -T - -czf "$TMP/tradebot.tar.gz")
 
 echo "▶ 上傳到 $VM …"
 gcloud compute scp --zone "$ZONE" --tunnel-through-iap "$TMP/tradebot.tar.gz" "$VM:/tmp/tradebot.tar.gz"
