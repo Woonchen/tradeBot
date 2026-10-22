@@ -6,12 +6,12 @@ from fastapi import FastAPI
 
 from .api import auth, bot, history, market, portfolio, strategies, webhook, ws
 from .api.totp import decode_secret
+from . import migrate
 from .config import settings
 from .db import SessionLocal, engine
 from .engine.executor import Executor
 from .engine.risk import load_bot_settings
 from .exchange.factory import build_adapters
-from .models import Base
 from .services.event_bus import EventBus
 from .services.market_stream import MarketHub
 from .workers.strategy_runner import StrategyRunner
@@ -38,7 +38,7 @@ def check_secrets():
 async def lifespan(app: FastAPI):
     check_secrets()
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(migrate.upgrade)  # 把資料庫升級到最新結構（Alembic）
     async with SessionLocal() as s:
         await load_bot_settings(s)
         await s.commit()

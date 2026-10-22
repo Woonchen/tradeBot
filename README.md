@@ -192,7 +192,12 @@ SITE_ADDRESS=bot.example.com docker compose up -d --build
 
 - `web`（Caddy）會自動申請 HTTPS 憑證，並提供前端與反向代理 `/api`、`/ws`、`/webhook`
 - `backend` 使用 PostgreSQL（`postgres` 服務）
-- 資料表在啟動時自動建立（`create_all`）；之後如果要修改 schema，建議引入 Alembic
+- 資料庫結構由 Alembic 管理（`backend/app/migrations/`），後端啟動時自動升級到最新版；
+  導入 Alembic 前就存在的資料庫會自動標記成 baseline（`0001`），資料不會動
+- 改了 `backend/app/models.py` 之後要產生 migration，檢查內容後一起 commit：
+  `cd backend && uv run alembic revision --autogenerate -m "說明這次改了什麼"`。
+  忘了產生的話 `tests/test_migrations.py` 會失敗
+- 每個容器的 log 最多保留 5 個 10 MB 的檔案（`docker-compose.yml` 的 `x-logging`）
 
 ## 資料庫備份
 

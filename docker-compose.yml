@@ -1,6 +1,14 @@
+# Docker 預設的 log 沒有上限，會一直長到磁碟滿；每個容器最多留 5 個 10 MB 的檔案（跟同機的其他專案一致）。
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16-alpine
+    logging: *logging
     environment:
       POSTGRES_USER: tradebot
       POSTGRES_PASSWORD: tradebot
@@ -15,6 +23,7 @@ services:
 
   backend:
     build: ./backend
+    logging: *logging
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://tradebot:tradebot@postgres:5432/tradebot
@@ -25,6 +34,7 @@ services:
 
   web:
     build: ./frontend
+    logging: *logging
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
     ports:
