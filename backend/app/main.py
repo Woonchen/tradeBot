@@ -3,7 +3,6 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from .api import auth, bot, history, market, portfolio, strategies, webhook, ws
 from .config import settings
@@ -69,13 +68,8 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
+# 不開 CORS：正式環境前後端同網域（Caddy），開發時由 Vite 的 proxy 轉發，都不是跨網域請求
 app = FastAPI(title="TradeBot", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 for r in (
     auth.router, webhook.router, market.router, history.router, portfolio.router, bot.router,
     strategies.router, ws.router,

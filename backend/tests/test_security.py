@@ -158,3 +158,26 @@ def test_ws_closes_when_token_expires(monkeypatch):
         with pytest.raises(WebSocketDisconnect) as e:
             ws.receive_json()
         assert e.value.code == 4401
+
+
+# ------------------------------------------------------------------ webhook 輸入檢查
+def test_webhook_rejects_oversized_fields_without_echoing_input(monkeypatch):
+    from app.api import webhook
+
+    monkeypatch.setattr(settings, "webhook_ip_allowlist", "")
+    app = FastAPI()
+    app.include_router(webhook.router)
+    app.state.executor = None  # 驗證失敗就回應，不會用到
+    c = TestClient(app)
+
+    r = c.post("/webhook/tradingview", content=b"not json")
+    assert r.status_code == 422 and r.json()["detail"] == "payload 不是有效的 JSON"
+
+    long = "X" * 500
+    r = c.post("/webhook/tradingview", json={"secret": "s", "symbol": "BTCUSDT", "action": "buy", "strategy": long})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "payload 欄位不正確：strategy"
+    assert long not in r.text  # 不把輸入內容回傳
+
+    r = c.post("/webhook/tradingview", json={"secret": "s"})
+    assert r.json()["detail"] == "payload 欄位不正確：action, symbol"

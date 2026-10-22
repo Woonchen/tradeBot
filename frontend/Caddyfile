@@ -22,10 +22,18 @@
 		Strict-Transport-Security "max-age=31536000"
 		-Server
 	}
+	# 限制請求大小：webhook 與登入不需登入就能呼叫，沒有上限的話一個超大請求就能吃光後端記憶體
 	handle /api/* {
+		request_body {
+			max_size 1MB
+		}
 		reverse_proxy backend:8000
 	}
 	handle /webhook/* {
+		# TradingView 的訊號只有幾百 bytes
+		request_body {
+			max_size 64KB
+		}
 		reverse_proxy backend:8000
 	}
 	handle /ws {

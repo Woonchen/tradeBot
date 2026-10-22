@@ -1,12 +1,16 @@
 import asyncio
 import json
+import logging
 import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from ..exchange.base import UnknownSymbol
+
 from .deps import decode_token
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 AUTH_TIMEOUT = 10  # 秒；連上後要在這段時間內送出登入訊息
 UNAUTHORIZED = 4401  # 前端收到這個關閉碼會登出、不再重連
@@ -64,8 +68,11 @@ async def ws_endpoint(ws: WebSocket):
             try:
                 symbol = await hub.watch_chart(ws, msg["symbol"], msg.get("market", "spot"), msg.get("interval", "1h"))
                 reply = {"type": "chart_ok", "data": {**msg, "resolved": symbol}, "log": None}
-            except Exception as e:
+            except (ValueError, UnknownSymbol) as e:  # 輸入錯誤：訊息是我們自己寫的，可以回給前端
                 reply = {"type": "chart_error", "data": {**msg, "error": str(e)}, "log": None}
+            except Exception:  # 其他錯誤（交易所、網路）可能含內部細節，只記在伺服器 log
+                log.exception("watch_chart failed")
+                reply = {"type": "chart_error", "data": {**msg, "error": "訂閱 K 線失敗，請稍後再試"}, "log": None}
             await ws.send_text(json.dumps(reply))
     except WebSocketDisconnect:
         pass

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from ..config import settings
 from ..engine.executor import Executor
@@ -15,15 +15,16 @@ router = APIRouter(tags=["webhook"])
 
 
 class WebhookPayload(BaseModel):
-    secret: str
-    symbol: str  # {{ticker}}，例如 BTCUSDT 或 BTCUSDT.P
-    action: str  # {{strategy.order.action}}（buy/sell）或明確的 long/short/close
+    # 長度上限對應資料庫欄位（models.Signal），超過時回 422 而不是寫入失敗
+    secret: str = Field(max_length=256)
+    symbol: str = Field(max_length=40)  # {{ticker}}，例如 BTCUSDT 或 BTCUSDT.P
+    action: str = Field(max_length=10)  # {{strategy.order.action}}（buy/sell）或明確的 long/short/close
     market: Literal["spot", "futures"] = "spot"
-    position: str | None = None  # {{strategy.market_position}}：long/short/flat
-    strategy: str = "tradingview"
+    position: str | None = Field(None, max_length=10)  # {{strategy.market_position}}：long/short/flat
+    strategy: str = Field("tradingview", max_length=64)
     price: float | None = None
-    time: str | None = None  # {{timenow}}
-    id: str | None = None  # {{strategy.order.id}}
+    time: str | None = Field(None, max_length=64)  # {{timenow}}
+    id: str | None = Field(None, max_length=128)  # {{strategy.order.id}}
 
 
 def resolve_target(action: str, position: str | None) -> str:
@@ -58,8 +59,12 @@ async def tradingview_webhook(request: Request, executor: Executor = Depends(get
     body = await request.body()
     try:
         payload = WebhookPayload.model_validate(json.loads(body))
-    except (json.JSONDecodeError, ValidationError) as e:
-        raise HTTPException(422, f"payload 格式錯誤：{e}")
+    except json.JSONDecodeError:
+        raise HTTPException(422, "payload 不是有效的 JSON")
+    except ValidationError as e:
+        # 只回欄位名稱，方便設定 TradingView 時除錯，不回傳內部的驗證細節與輸入內容
+        fields = sorted({".".join(str(x) for x in err["loc"]) or "body" for err in e.errors()})
+        raise HTTPException(422, f"payload 欄位不正確：{', '.join(fields)}")
     if not hmac.compare_digest(payload.secret, settings.webhook_secret):
         raise HTTPException(401, "invalid secret")
     try:
