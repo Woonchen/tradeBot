@@ -120,3 +120,17 @@ async def test_enabled_at_set_on_enable_and_on_logic_change(client):
     changed = {**body("renamed"), "interval": "1h"}
     assert c.put("/api/strategies/1", json=changed).json()["enabled_at"] > first  # 啟用中改了週期：重新開始觀察
     assert c.put("/api/strategies/1", json={**changed, "enabled": False}).json()["enabled_at"] is not None  # 停用後保留
+
+
+async def test_turning_on_enter_on_enable_restarts_observation(client):
+    c, sf = client
+    c.post("/api/strategies", json=body("a"))
+    async with sf() as s:
+        cfg = await s.get(StrategyConfig, 1)
+        cfg.last_target, cfg.last_bar_time = "long", 123  # 已經在觀察、記下判斷
+        await s.commit()
+    d = c.put("/api/strategies/1", json={**body("a"), "enter_on_enable": True}).json()
+    assert d["enter_on_enable"] is True
+    assert d["last_target"] is None  # 重新開始：下一次判斷就會照目前判斷進場
+    d = c.put("/api/strategies/1", json={**body("a"), "enabled": False, "enter_on_enable": True}).json()
+    assert d["enter_on_enable"] is True  # 停用時設定保留

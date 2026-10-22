@@ -374,3 +374,61 @@ def test_backtest_gap_take_profit_and_same_bar_conservative():
     short = [bar(0, 100, 100, 100, 100), bar(1, 100, 100, 100, 100), bar(2, 100, 106, 99, 100), bar(3, 100, 100, 100, 100)]
     (t,) = run_backtest(Flip(["short"] * 4), short, market="futures", size_value=100, fee_rate=0.0, stop_loss_pct=5).trades
     assert t["exit"] == pytest.approx(105) and t["exit_reason"] == "stop"
+
+
+async def test_runner_enter_on_enable_follows_current_judgment(env, monkeypatch):  # noqa: F811
+    ex, sf, ad = env
+    sec = INTERVAL_SECONDS["1h"]
+    now_bar = int(time.time()) // sec * sec
+    state = {"target": "long", "bars": 3}
+
+    async def fake_fetch(adapter, symbol, interval, bars):
+        return [Candle(now_bar - 1000 * sec + i * sec, 100, 100, 100, 100, 1) for i in range(state["bars"])]
+
+    class Scripted:
+        warmup = 10
+
+        def targets(self, candles):
+            return [state["target"]] * len(candles)
+
+    monkeypatch.setattr("app.workers.strategy_runner.fetch_candles", fake_fetch)
+    monkeypatch.setattr("app.workers.strategy_runner.build_strategy", lambda k, p: Scripted())
+
+    async def first_eval(cid, target):
+        state["target"] = target
+        state["bars"] += 1
+        await StrategyRunner(ex).evaluate(cid)
+        while not ex.queue.empty():
+            await ex.process(await ex.queue.get())
+
+    async with sf() as s:
+        s.add_all([
+            StrategyConfig(id=1, name="follow", strategy="x", symbol="BTCUSDT", market="futures", interval="1h",
+                           params={}, enabled=True, enter_on_enable=True),
+            StrategyConfig(id=2, name="flat-start", strategy="x", symbol="BTCUSDT", market="spot", interval="1h",
+                           params={}, enabled=True, enter_on_enable=True),
+        ])
+        await s.commit()
+    await first_eval(1, "long")  # 第一次判斷就是 long → 立即開多
+    assert [o[0] for o in ad["futures"].orders] == ["buy"]
+    await first_eval(2, "flat")  # 第一次判斷是空手 → 什麼都不做
+    assert ad["spot"].orders == []
+
+    # 重新啟用（判斷重設）但已經有同方向部位：不重複下單
+    async with sf() as s:
+        (await s.get(StrategyConfig, 1)).last_target = None
+        await s.commit()
+    await first_eval(1, "long")
+    assert [o[0] for o in ad["futures"].orders] == ["buy"]
+    async with sf() as s:
+        sigs = (await s.scalars(select(Signal))).all()
+    assert [(x.target, x.status, x.raw_payload["from"]) for x in sigs] == [("long", "executed", None)]
+
+
+def test_backtest_follow_initial_enters_at_start():
+    c = [Candle(i, 100 + i, 100 + i, 100 + i, 100 + i, 1) for i in range(6)]
+    seq = ["flat", "long", "long", "long", "long", "flat"]
+    waited = run_backtest(Flip(seq), c, market="futures", size_value=100, fee_rate=0.0, warmup=2)
+    followed = run_backtest(Flip(seq), c, market="futures", size_value=100, fee_rate=0.0, warmup=2, follow_initial=True)
+    assert waited.trades == []  # 起點已經是 long：等判斷改變，這段期間都沒變
+    assert [(t["entry_time"], t["exit_time"]) for t in followed.trades] == [(3, 5)]  # 起點就照判斷進場

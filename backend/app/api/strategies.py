@@ -27,6 +27,7 @@ class StrategyBody(BaseModel):
     interval: str
     params: dict = {}
     enabled: bool = False
+    enter_on_enable: bool = False  # 啟用後第一次判斷就照目前判斷進場
 
 
 class BacktestBody(BaseModel):
@@ -36,6 +37,7 @@ class BacktestBody(BaseModel):
     interval: str
     params: dict = {}
     bars: int = Field(1000, ge=50, le=20000)
+    enter_on_enable: bool = False  # 回測起點就照當下判斷進場（對應策略的同名設定）
     compare_earlier: bool = False  # 同時回測緊接在前、一樣長的期間（驗證策略不是只適合最近的行情）
     size_mode: Literal["fixed", "percent"] | None = None
     size_value: float | None = Field(None, gt=0)
@@ -195,10 +197,11 @@ async def backtest(body: BacktestBody, s: AsyncSession = Depends(get_session), e
         "stop_loss_pct": bot.stop_loss_pct if body.stop_loss_pct is None else body.stop_loss_pct,
         "take_profit_pct": bot.take_profit_pct if body.take_profit_pct is None else body.take_profit_pct,
     }
-    res = run_backtest(strat, recent, warmup=recent_warm, **sizing)
+    follow = {"follow_initial": body.enter_on_enable}
+    res = run_backtest(strat, recent, warmup=recent_warm, **sizing, **follow)
     earlier = None
     if body.compare_earlier and len(candles) >= 2 * n + warm:
-        earlier = run_backtest(strat, candles[-(2 * n + warm):-n], warmup=warm, **sizing).stats
+        earlier = run_backtest(strat, candles[-(2 * n + warm):-n], warmup=warm, **sizing, **follow).stats
     return {
         "symbol": symbol,
         "params": strat.p,

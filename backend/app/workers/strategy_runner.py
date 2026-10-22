@@ -88,12 +88,22 @@ class StrategyRunner:
                 return
 
         if prev is None:
+            # 啟用後第一次判斷：預設只記下來；設定了 enter_on_enable 就照目前判斷進場
+            # （判斷是空手時不動作，不去平掉不是這個策略開的部位）
+            enter = cfg.enter_on_enable and target != "flat"
+            if enter:
+                async with self.ex.sf() as s:
+                    pos = await get_open_position(s, symbol, cfg.market)
+                enter = pos is None or pos.side != target
             await self.bus.emit(
                 "strategy", cfg.to_dict(), category="signal",
-                message=f"策略「{cfg.name}」開始運作，目前判斷：{target}。等判斷改變時才會下單",
+                message=f"策略「{cfg.name}」開始運作，目前判斷：{target}。"
+                + ("依設定立即進場" if enter else "等判斷改變時才會下單"),
             )
-            return
-        await self.bus.emit("strategy", cfg.to_dict())
+            if not enter:
+                return
+        else:
+            await self.bus.emit("strategy", cfg.to_dict())
         if target != prev:
             if target == "flat":
                 # 策略啟用時不會跟著進場，之後判斷轉回空手時帳上可能根本沒有部位，送出去也只會被拒絕

@@ -8,7 +8,8 @@
   實際交易時合約用標記價格觸發，這裡用成交價的 K 棒近似
 - 下單大小規則跟機器人一樣：固定保證金或可用資金 %，合約乘上槓桿
 - warmup > 0 時，前 warmup 根只用來計算指標，不交易也不計入結果；回測起點就像那一刻啟用策略：
-  當下的判斷只記下來，要等判斷「改變」才進場（跟實際啟用一樣，不會一開始就追進既有的部位）
+  當下的判斷只記下來，要等判斷「改變」才進場（跟實際啟用一樣，不會一開始就追進既有的部位）；
+  follow_initial=True 時（對應策略的「啟用時立即依目前判斷進場」）起點就照當下判斷進場
 """
 
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ def run_backtest(
     warmup: int = 0,
     stop_loss_pct: float = 0,
     take_profit_pct: float = 0,
+    follow_initial: bool = False,
 ) -> BacktestResult:
     if fee_rate is None:
         fee_rate = 0.001 if market == "spot" else 0.0004
@@ -44,7 +46,7 @@ def run_backtest(
     targets = [for_market(t, market) for t in strategy.targets(candles)]
     if warmup > 0:
         warmup = min(warmup, len(candles) - 1)
-        observed = targets[warmup - 1]  # 啟用那一刻的判斷
+        observed = "flat" if follow_initial else targets[warmup - 1]  # 啟用那一刻的判斷
         window, changed = [], False
         for t in targets[warmup:]:
             changed = changed or t != observed

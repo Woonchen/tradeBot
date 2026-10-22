@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, false
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -188,6 +188,8 @@ class StrategyConfig(Base):
     interval: Mapped[str] = mapped_column(String(4))
     params: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 啟用後第一次判斷就照目前判斷進場；預設 False：只記下判斷，等判斷改變才下單
+    enter_on_enable: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     # 執行狀態：最後一根處理過的 K 棒、當時策略的判斷
     last_target: Mapped[str | None] = mapped_column(String(5))
     last_bar_time: Mapped[int | None] = mapped_column(Integer)

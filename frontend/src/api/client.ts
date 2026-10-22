@@ -89,7 +89,7 @@ export interface ParamSpec {
 export interface StrategyInfo { key: string; label: string; description: string; params: ParamSpec[] }
 export interface StrategyConfig {
   id: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
-  params: Record<string, any>; enabled: boolean; last_target: string | null;
+  params: Record<string, any>; enabled: boolean; enter_on_enable: boolean; last_target: string | null;
   last_bar_time: number | null; last_run_at: string | null; last_error: string | null; created_at: string;
   /** 最近一次啟用（或啟用中改了設定）的時間 */
   enabled_at: string | null;

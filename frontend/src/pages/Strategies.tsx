@@ -29,7 +29,7 @@ const TARGET_ZH: Record<string, string> = { long: "▲ 多", short: "▼ 空", f
 
 type Draft = {
   id?: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
-  params: Record<string, any>; enabled: boolean;
+  params: Record<string, any>; enabled: boolean; enter_on_enable: boolean;
 };
 
 const autoName = (symbol: string, label: string, interval: string) => `${symbol.replace(/USDT$/, "")} ${label.split(/[（ ]/)[0]} ${interval}`;
@@ -170,7 +170,8 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
       method: "POST",
       body: JSON.stringify({
         strategy: d.strategy, symbol: d.symbol, market: d.market, interval: d.interval,
-        params: cleanParams(info, d.params, d.market), bars, compare_earlier: req.compare, ...(sizing ?? {}),
+        params: cleanParams(info, d.params, d.market), bars, compare_earlier: req.compare, enter_on_enable: d.enter_on_enable,
+        ...(sizing ?? {}),
       }),
     }),
   });
@@ -222,6 +223,13 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
         <RuleBuilder key={p.name} market={d.market} value={d.params[p.name] ?? p.default}
           onChange={(v) => set("params", { ...d.params, [p.name]: v })} />
       ))}
+      <label className="check" style={{ marginTop: 14 }}>
+        <input type="checkbox" checked={d.enter_on_enable} onChange={(e) => set("enter_on_enable", e.target.checked)} />
+        啟用時立即依目前判斷進場
+        <span className="muted" style={{ fontSize: 12 }}>
+          （關閉：啟用後只記下判斷，等判斷改變才下單。打開：第一次判斷是多單或空單就直接進場；已在啟用中的策略改這個設定並儲存，也會重新判斷並進場）
+        </span>
+      </label>
       <div className="bt-panel">
         <h2 style={{ margin: 0 }}>回測</h2>
         <div className="form-grid">
@@ -287,7 +295,9 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
         </div>
       </div>
       <div className="toolbar" style={{ marginTop: 16, marginBottom: 0 }}>
-        <span className="muted" style={{ fontSize: 12 }}>實際下單使用「設定」頁的下單規則。啟用後會等策略判斷「改變」時才下單，不會立刻進場。</span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          實際下單使用「設定」頁的下單規則。{d.enter_on_enable ? "啟用後第一次判斷就會照目前判斷進場。" : "啟用後會等策略判斷「改變」時才下單，不會立刻進場。"}
+        </span>
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={onDone}>取消</button>
         <button className="btn" disabled={save.isPending} onClick={() => save.mutate(false)}>儲存（停用）</button>
@@ -325,7 +335,10 @@ function Performance({ labelOf }: { labelOf: (key: string) => string }) {
   const cmp = useMutation({
     mutationFn: (c: StrategyConfig) => api<BacktestResult>("/api/strategies/backtest", {
       method: "POST",
-      body: JSON.stringify({ strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, bars: Math.min(barsSince(c), 20000) }),
+      body: JSON.stringify({
+        strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params,
+        bars: Math.min(barsSince(c), 20000), enter_on_enable: c.enter_on_enable,
+      }),
     }),
   });
   if (!perf.data) return null;
@@ -392,7 +405,10 @@ export function Strategies() {
   const toggle = useMutation({
     mutationFn: (c: StrategyConfig) => api(`/api/strategies/${c.id}`, {
       method: "PUT",
-      body: JSON.stringify({ name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, enabled: !c.enabled }),
+      body: JSON.stringify({
+        name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params,
+        enabled: !c.enabled, enter_on_enable: c.enter_on_enable,
+      }),
     }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["strategies"] }),
   });
@@ -405,7 +421,7 @@ export function Strategies() {
   const labelOf = (key: string) => catalog.data.find((c) => c.key === key)?.label ?? key;
   const newDraft = (): Draft => {
     const first = catalog.data[0];
-    return { name: autoName("BTCUSDT", first.label, "1h"), strategy: first.key, symbol: "BTCUSDT", market: "futures", interval: "1h", params: defaults(first), enabled: false };
+    return { name: autoName("BTCUSDT", first.label, "1h"), strategy: first.key, symbol: "BTCUSDT", market: "futures", interval: "1h", params: defaults(first), enabled: false, enter_on_enable: false };
   };
 
   return (
@@ -436,7 +452,7 @@ export function Strategies() {
                   <td className="muted">{c.last_bar_time ? fmtTime(new Date(c.last_bar_time * 1000).toISOString()) : "—"}</td>
                   <td style={{ display: "flex", gap: 6 }}>
                     <button className="btn small" disabled={toggle.isPending} onClick={() => toggle.mutate(c)}>{c.enabled ? "停用" : "啟用"}</button>
-                    <button className="btn small" onClick={() => setEditing({ id: c.id, name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, enabled: c.enabled })}>編輯／回測</button>
+                    <button className="btn small" onClick={() => setEditing({ id: c.id, name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, enabled: c.enabled, enter_on_enable: c.enter_on_enable })}>編輯／回測</button>
                     <button className="btn small danger" disabled={remove.isPending} onClick={() => confirm(`刪除策略「${c.name}」？既有持倉不會自動平倉。`) && remove.mutate(c.id)}>刪除</button>
                   </td>
                 </tr>
