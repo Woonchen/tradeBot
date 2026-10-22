@@ -39,11 +39,23 @@ async def test_migrations_match_models(tmp_path):
     await engine.dispose()
 
 
+def build_pre_alembic_db(conn) -> None:
+    """做出「導入 Alembic 前」的資料庫：baseline（0001）的結構、沒有 alembic_version 表。"""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config()
+    cfg.set_main_option("script_location", "app/migrations")
+    cfg.attributes["connection"] = conn
+    command.upgrade(cfg, migrate.BASELINE)
+    conn.execute(text("DROP TABLE alembic_version"))
+
+
 async def test_existing_create_all_database_is_stamped_and_kept(tmp_path):
-    """導入 Alembic 前用 create_all 建的資料庫：標記成 baseline 再升級，資料不動。"""
+    """導入 Alembic 前用 create_all 建的資料庫：標記成 baseline 再升級到最新，資料不動。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'old.db'}")
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(build_pre_alembic_db)
         await conn.execute(text(
             "INSERT INTO activity_logs (ts, level, category, message) VALUES ('2026-01-01', 'info', 'system', 'keep me')"
         ))
@@ -54,6 +66,24 @@ async def test_existing_create_all_database_is_stamped_and_kept(tmp_path):
     async with engine.connect() as conn:
         assert await conn.run_sync(current) == head()
         assert (await conn.execute(text("SELECT message FROM activity_logs"))).scalar_one() == "keep me"
+        assert await conn.run_sync(diff) == []  # 升級後的結構跟 models.py 一致
         tables = await conn.run_sync(lambda c: set(inspect(c).get_table_names()))
         assert "alembic_version" in tables
+    await engine.dispose()
+
+
+async def test_0002_backfills_enabled_at_for_enabled_strategies(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'b.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(build_pre_alembic_db)
+        await conn.execute(text(
+            "INSERT INTO strategy_configs (id, name, strategy, symbol, market, interval, params, enabled, created_at) VALUES "
+            "(1, 'on', 'x', 'BTCUSDT', 'futures', '15m', '{}', 1, '2026-01-01 00:00:00'),"
+            "(2, 'off', 'x', 'ETHUSDT', 'futures', '15m', '{}', 0, '2026-01-02 00:00:00')"
+        ))
+    async with engine.begin() as conn:
+        await conn.run_sync(migrate.upgrade)
+    async with engine.connect() as conn:
+        rows = (await conn.execute(text("SELECT id, enabled_at FROM strategy_configs ORDER BY id"))).all()
+    assert [(i, str(v)[:10] if v else None) for i, v in rows] == [(1, "2026-01-01"), (2, None)]
     await engine.dispose()

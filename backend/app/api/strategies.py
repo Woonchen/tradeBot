@@ -10,7 +10,7 @@ from ..engine.executor import Executor
 from ..engine.risk import load_bot_settings
 from ..exchange.base import UnknownSymbol, normalize_ticker
 from ..engine.performance import OwnerStats, attribute
-from ..models import Position, Signal, StrategyConfig, Trade
+from ..models import Position, Signal, StrategyConfig, Trade, utcnow
 from ..strategies import INTERVAL_SECONDS, REGISTRY, build_strategy
 from ..strategies.backtest import run_backtest
 from ..strategies.history import fetch_candles
@@ -41,6 +41,9 @@ class BacktestBody(BaseModel):
     size_value: float | None = Field(None, gt=0)
     leverage: int | None = Field(None, ge=1, le=125)
     start_equity: float = Field(10_000, gt=0)
+    # 沒填就用「設定」頁的全域停損停利（實際下單也會套用）；0 = 不設
+    stop_loss_pct: float | None = Field(None, ge=0, lt=100)
+    take_profit_pct: float | None = Field(None, ge=0, le=1000)
 
 
 async def _validate(body: StrategyBody | BacktestBody, ex: Executor) -> str:
@@ -121,6 +124,8 @@ async def create_config(body: StrategyBody, s: AsyncSession = Depends(get_sessio
     await _check_one_per_symbol(s, body)
     cfg = StrategyConfig(**body.model_dump())
     cfg.symbol = cfg.symbol.upper()
+    if cfg.enabled:
+        cfg.enabled_at = utcnow()
     s.add(cfg)
     await s.commit()
     await ex.bus.emit("strategy", cfg.to_dict(), category="system",
@@ -147,6 +152,8 @@ async def update_config(
     if changed_logic or turned_on:
         # 參數改了或重新啟用：重新觀察，等「之後」判斷改變才下單，不會立刻進場
         cfg.last_target = cfg.last_bar_time = None
+        if cfg.enabled:  # 從現在開始觀察，「實際績效」的回測同期間從這裡算起
+            cfg.enabled_at = utcnow()
     cfg.last_error = None
     await s.commit()
     _runner(request).reset(cfg.id)
@@ -185,6 +192,8 @@ async def backtest(body: BacktestBody, s: AsyncSession = Depends(get_session), e
         "size_value": body.size_value or bot.size_value,
         "leverage": body.leverage or bot.leverage,
         "start_equity": body.start_equity,
+        "stop_loss_pct": bot.stop_loss_pct if body.stop_loss_pct is None else body.stop_loss_pct,
+        "take_profit_pct": bot.take_profit_pct if body.take_profit_pct is None else body.take_profit_pct,
     }
     res = run_backtest(strat, recent, warmup=recent_warm, **sizing)
     earlier = None

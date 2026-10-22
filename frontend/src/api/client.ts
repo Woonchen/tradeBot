@@ -91,6 +91,8 @@ export interface StrategyConfig {
   id: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
   params: Record<string, any>; enabled: boolean; last_target: string | null;
   last_bar_time: number | null; last_run_at: string | null; last_error: string | null; created_at: string;
+  /** 最近一次啟用（或啟用中改了設定）的時間 */
+  enabled_at: string | null;
 }
 export interface OpenTrip { symbol: string; market: Market; side: "long" | "short"; qty: number; opened_at: string; realized: number; fees: number; unrealized: number | null }
 export interface LivePerf {
@@ -103,7 +105,7 @@ export interface PerformanceReport {
 }
 export interface BacktestTrade {
   side: "long" | "short"; entry_time: number; exit_time: number; entry: number; exit: number; qty: number;
-  pnl: number; fees: number; net: number;
+  pnl: number; fees: number; net: number; exit_reason: "signal" | "stop" | "take_profit" | "end";
 }
 export interface BacktestStats {
   start_equity: number; final_equity: number; total_return: number; max_drawdown: number; trades: number;
@@ -112,6 +114,7 @@ export interface BacktestStats {
 }
 export interface BacktestSizing {
   market: Market; size_mode: "fixed" | "percent"; size_value: number; leverage: number; start_equity: number;
+  stop_loss_pct: number; take_profit_pct: number;
 }
 export interface BacktestResult {
   symbol: string; params: Record<string, any>; candles: (Candle & { volume: number })[];

@@ -194,3 +194,5 @@ class StrategyConfig(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # 最近一次啟用的時間（停用後保留），「實際績效」用它決定回測同期間要從哪裡算起
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

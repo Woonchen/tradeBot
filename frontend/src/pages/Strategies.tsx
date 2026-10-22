@@ -18,7 +18,13 @@ const approxDays = (bars: number, interval: string) => {
 };
 const fmtDate = (t: number | null) => (t === null ? "—" : new Date(t * 1000).toLocaleDateString("zh-TW"));
 
-type Sizing = { size_mode: "fixed" | "percent"; size_value: number; leverage: number; start_equity: number };
+type Sizing = {
+  size_mode: "fixed" | "percent"; size_value: number; leverage: number; start_equity: number;
+  stop_loss_pct: number; take_profit_pct: number;
+};
+const EXIT_ZH: Record<string, string> = { signal: "策略訊號", stop: "停損", take_profit: "停利", end: "回測結束" };
+const protectionText = (sl: number, tp: number) =>
+  sl || tp ? `；停損 ${sl ? `${sl}%` : "不設"}、停利 ${tp ? `${tp}%` : "不設"}` : "；不設停損停利";
 const TARGET_ZH: Record<string, string> = { long: "▲ 多", short: "▼ 空", flat: "空手" };
 
 type Draft = {
@@ -104,7 +110,7 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
       <p className="muted" style={{ margin: 0, fontSize: 12 }}>
         {fmtDate(s.from)} ～ {fmtDate(s.to)}，{s.bars} 根 K 棒；
         {z.size_mode === "fixed" ? `每筆 ${fmtNum(z.size_value)} USDT 保證金` : `每筆用可用資金 ${z.size_value}%`}
-        {z.market === "futures" && ` × ${z.leverage} 倍槓桿`}，起始 {fmtNum(z.start_equity)} USDT。
+        {z.market === "futures" && ` × ${z.leverage} 倍槓桿`}{protectionText(z.stop_loss_pct, z.take_profit_pct)}，起始 {fmtNum(z.start_equity)} USDT。
         {result.warmup > 0 && ` 另外多抓前面 ${result.warmup} 根讓指標穩定，不計入結果；起點當下若已在部位內，要等判斷改變才進場（跟實際啟用一樣）。`}
       </p>
       {result.earlier && <PeriodCompare recent={s} earlier={result.earlier} />}
@@ -130,7 +136,7 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
         {result.trades.length === 0 ? <div className="empty">這段期間沒有交易</div> : (
           <div className="table-wrap" style={{ maxHeight: 360, overflowY: "auto" }}>
             <table>
-              <thead><tr><th>方向</th><th>進場</th><th className="num">進場價</th><th>出場</th><th className="num">出場價</th><th className="num">損益</th><th className="num">手續費</th><th className="num">淨損益</th></tr></thead>
+              <thead><tr><th>方向</th><th>進場</th><th className="num">進場價</th><th>出場</th><th className="num">出場價</th><th className="num">損益</th><th className="num">手續費</th><th className="num">淨損益</th><th>出場原因</th></tr></thead>
               <tbody>{[...result.trades].reverse().map((t, i) => (
                 <tr key={i}>
                   <td><span className={`badge ${t.side}`}>{TARGET_ZH[t.side]}</span></td>
@@ -138,6 +144,7 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
                   <td className="muted">{fmtTime(new Date(t.exit_time * 1000).toISOString())}</td><td className="num">{fmtPrice(t.exit)}</td>
                   <td className={`num ${pnlClass(t.pnl)}`}>{fmtSigned(t.pnl)}</td><td className="num">{fmtNum(t.fees)}</td>
                   <td className={`num ${pnlClass(t.net)}`}>{fmtSigned(t.net)}</td>
+                  <td className={t.exit_reason === "stop" ? "down" : t.exit_reason === "take_profit" ? "up" : "muted"}>{EXIT_ZH[t.exit_reason] ?? "—"}</td>
                 </tr>
               ))}</tbody>
             </table>
@@ -227,6 +234,7 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
           <label className="field">下單金額
             <select value={sizing ? "custom" : "bot"} onChange={(e) => setSizing(e.target.value === "bot" || !bot.data ? null : {
               size_mode: bot.data.size_mode, size_value: bot.data.size_value, leverage: bot.data.leverage, start_equity: 10000,
+              stop_loss_pct: bot.data.stop_loss_pct, take_profit_pct: bot.data.take_profit_pct,
             })}>
               <option value="bot">照「設定」頁</option>
               <option value="custom">自訂</option>
@@ -234,7 +242,7 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
             {!sizing && bot.data && (
               <small>
                 {bot.data.size_mode === "fixed" ? `每筆 ${bot.data.size_value} USDT 保證金` : `可用資金的 ${bot.data.size_value}%`}
-                {d.market === "futures" && ` × ${bot.data.leverage} 倍槓桿`}，起始 10,000 USDT
+                {d.market === "futures" && ` × ${bot.data.leverage} 倍槓桿`}{protectionText(bot.data.stop_loss_pct, bot.data.take_profit_pct)}，起始 10,000 USDT
               </small>
             )}
           </label>
@@ -255,6 +263,14 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
               )}
               <label className="field">起始資金（USDT）
                 <input type="number" min={1} step="any" value={sizing.start_equity} onChange={(e) => setSz("start_equity", Number(e.target.value))} />
+              </label>
+              <label className="field">停損（價格反向 %）
+                <input type="number" min={0} step="any" value={sizing.stop_loss_pct} onChange={(e) => setSz("stop_loss_pct", Number(e.target.value))} />
+                <small>0 = 不設</small>
+              </label>
+              <label className="field">停利（價格順向 %）
+                <input type="number" min={0} step="any" value={sizing.take_profit_pct} onChange={(e) => setSz("take_profit_pct", Number(e.target.value))} />
+                <small>0 = 不設</small>
               </label>
             </>
           )}
@@ -284,8 +300,9 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
   );
 }
 
-/** 策略上線以來（以建立時間計）的 K 棒數，用來回測同一段期間。 */
-const barsSince = (c: StrategyConfig) => Math.floor((Date.now() - Date.parse(c.created_at)) / 1000 / INTERVAL_SEC[c.interval]);
+/** 策略最近一次啟用以來的 K 棒數，用來回測同一段期間。 */
+const since = (c: StrategyConfig) => c.enabled_at ?? c.created_at;
+const barsSince = (c: StrategyConfig) => Math.floor((Date.now() - Date.parse(since(c))) / 1000 / INTERVAL_SEC[c.interval]);
 
 function PerfCells({ p }: { p: LivePerf }) {
   return (
@@ -318,7 +335,7 @@ function Performance({ labelOf }: { labelOf: (key: string) => string }) {
       <h2>實際績效</h2>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>策略</th><th>上線</th><th className="num">完整交易</th><th className="num">勝率</th><th className="num">獲利因子</th><th className="num">淨損益</th><th className="num">手續費</th><th>持倉中（未實現）</th><th /></tr></thead>
+          <thead><tr><th>策略</th><th>啟用時間</th><th className="num">完整交易</th><th className="num">勝率</th><th className="num">獲利因子</th><th className="num">淨損益</th><th className="num">手續費</th><th>持倉中（未實現）</th><th /></tr></thead>
           <tbody>
             {rows.map((x) => {
               const c = x.config;
@@ -328,10 +345,10 @@ function Performance({ labelOf }: { labelOf: (key: string) => string }) {
               return [
                 <tr key={c.id}>
                   <td>{c.name}<div className="muted" style={{ fontSize: 12 }}>{labelOf(c.strategy)} · {c.symbol} {c.interval}{c.enabled ? "" : " · 已停用"}</div></td>
-                  <td className="muted">{fmtTime(c.created_at)}</td>
+                  <td className="muted">{fmtTime(since(c))}</td>
                   <PerfCells p={x} />
                   <td>
-                    <button className="btn small" disabled={bars < 50 || cmp.isPending} title={bars < 50 ? "上線未滿 50 根 K 棒，還不能比較" : ""}
+                    <button className="btn small" disabled={bars < 50 || cmp.isPending} title={bars < 50 ? "啟用未滿 50 根 K 棒，還不能比較" : ""}
                       onClick={() => cmp.mutate(c)}>{cmp.isPending && shown ? "回測中…" : "回測同期間"}</button>
                   </td>
                 </tr>,

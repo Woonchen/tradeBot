@@ -317,8 +317,60 @@ async def test_backtest_api_warmup_and_earlier_period(env, monkeypatch):  # noqa
     d = r.json()
     assert fetched["bars"] == 2 * 200 + 30  # 兩段 + 暖機
     assert d["warmup"] == 30 and len(d["candles"]) == 200 and d["stats"]["bars"] == 200
-    assert d["sizing"] == {"market": "futures", "size_mode": "fixed", "size_value": 500, "leverage": 3, "start_equity": 10000}
+    assert d["sizing"] == {"market": "futures", "size_mode": "fixed", "size_value": 500, "leverage": 3, "start_equity": 10000,
+                           "stop_loss_pct": 0, "take_profit_pct": 0}  # 沒填：用設定頁的（測試資料是 0）
     assert d["earlier"]["bars"] == 200 and d["earlier"]["to"] < d["stats"]["from"]  # 更早那段在前面、不重疊
+
+    from app.models import BotSettings
+
+    async with sf() as s:
+        (await s.get(BotSettings, 1)).stop_loss_pct = 7
+        await s.commit()
+    body["compare_earlier"] = False
+    assert TestClient(app).post("/api/strategies/backtest", json=body).json()["sizing"]["stop_loss_pct"] == 7
+    body["stop_loss_pct"] = 0  # 明確填 0 = 不設停損，不會被設定頁的值蓋掉
+    assert TestClient(app).post("/api/strategies/backtest", json=body).json()["sizing"]["stop_loss_pct"] == 0
 
     body["bars"] = 20001
     assert TestClient(app).post("/api/strategies/backtest", json=body).status_code == 422
+
+
+def bar(t, o, h, l, c):  # noqa: E741
+    return Candle(t, o, h, l, c, 1)
+
+
+def test_backtest_stop_loss_and_no_reentry_until_signal_changes():
+    c = [
+        bar(0, 100, 100, 100, 100),
+        bar(1, 100, 101, 99, 100),   # 第 0 根判斷 long → 開盤 100 進場，停損 95
+        bar(2, 100, 100, 94, 96),    # 最低 94 觸及 95 → 以 95 停損出場
+        bar(3, 96, 97, 95, 96),      # 判斷還是 long：不重新進場
+        bar(4, 96, 97, 95, 96),      # 判斷轉 flat（第 3 根）
+        bar(5, 96, 97, 95, 96),      # 第 4 根判斷又轉 long → 這根開盤重新進場
+        bar(6, 96, 96, 96, 96),
+    ]
+    seq = ["long", "long", "long", "flat", "long", "long", "long"]
+    r = run_backtest(Flip(seq), c, market="futures", size_value=100, fee_rate=0.0, stop_loss_pct=5)
+    assert [(t["entry_time"], t["exit_time"], t["exit"], t["exit_reason"]) for t in r.trades] == [
+        (1, 2, 95, "stop"), (5, 6, 96, "end"),
+    ]
+
+
+def test_backtest_gap_take_profit_and_same_bar_conservative():
+    seq = ["long"] * 4
+    gap = [bar(0, 100, 100, 100, 100), bar(1, 100, 100, 100, 100), bar(2, 90, 92, 88, 91), bar(3, 91, 91, 91, 91)]
+    (t,) = run_backtest(Flip(seq), gap, market="futures", size_value=100, fee_rate=0.0, stop_loss_pct=5).trades
+    assert (t["exit"], t["exit_reason"]) == (90, "stop")  # 開盤就跳空到停損價以下：以開盤價出場
+
+    tp = [bar(0, 100, 100, 100, 100), bar(1, 100, 100, 100, 100), bar(2, 100, 111, 99, 105), bar(3, 105, 105, 105, 105)]
+    (t,) = run_backtest(Flip(seq), tp, market="futures", size_value=100, fee_rate=0.0, take_profit_pct=10).trades
+    assert t["exit"] == pytest.approx(110) and t["exit_reason"] == "take_profit"
+
+    both = [bar(0, 100, 100, 100, 100), bar(1, 100, 100, 100, 100), bar(2, 100, 111, 94, 100), bar(3, 100, 100, 100, 100)]
+    (t,) = run_backtest(Flip(seq), both, market="futures", size_value=100, fee_rate=0.0,
+                        stop_loss_pct=5, take_profit_pct=10).trades
+    assert t["exit_reason"] == "stop"  # 同一根碰到兩邊：保守當作先停損
+
+    short = [bar(0, 100, 100, 100, 100), bar(1, 100, 100, 100, 100), bar(2, 100, 106, 99, 100), bar(3, 100, 100, 100, 100)]
+    (t,) = run_backtest(Flip(["short"] * 4), short, market="futures", size_value=100, fee_rate=0.0, stop_loss_pct=5).trades
+    assert t["exit"] == pytest.approx(105) and t["exit_reason"] == "stop"

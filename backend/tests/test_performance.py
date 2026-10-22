@@ -107,3 +107,16 @@ async def test_performance_endpoint(client):
     assert by_id[1]["open"][0]["unrealized"] == 2.5
     assert by_id[2]["trades"] == 0 and by_id[2]["open"] == []  # 還沒成交的策略也列出來
     assert [o["label"] for o in d["others"]] == ["手動開倉"]
+
+
+async def test_enabled_at_set_on_enable_and_on_logic_change(client):
+    c, _ = client
+    d = c.post("/api/strategies", json=body("a", enabled=False)).json()
+    assert d["enabled_at"] is None
+    d = c.put("/api/strategies/1", json=body("a")).json()  # 啟用
+    first = d["enabled_at"]
+    assert first is not None
+    assert c.put("/api/strategies/1", json=body("renamed")).json()["enabled_at"] == first  # 只改名：不重算
+    changed = {**body("renamed"), "interval": "1h"}
+    assert c.put("/api/strategies/1", json=changed).json()["enabled_at"] > first  # 啟用中改了週期：重新開始觀察
+    assert c.put("/api/strategies/1", json={**changed, "enabled": False}).json()["enabled_at"] is not None  # 停用後保留

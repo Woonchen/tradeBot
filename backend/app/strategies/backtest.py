@@ -2,6 +2,10 @@
 
 - 第 i 根收盤時策略判斷改變 → 第 i+1 根「開盤價」成交（避免用收盤價成交的偷看）
 - 每次成交扣 taker 手續費；不模擬滑價、資金費率和強平
+- 停損停利跟機器人一樣以開倉價的百分比算出觸發價，用每根 K 棒的最高／最低價判斷：
+  觸及就以觸發價出場（開盤就跳空越過時以開盤價）；同一根同時碰到兩邊時當作先停損（保守估計）。
+  停損停利出場後，策略判斷沒變就不會再進場，要等判斷改變（跟實際執行一樣）
+  實際交易時合約用標記價格觸發，這裡用成交價的 K 棒近似
 - 下單大小規則跟機器人一樣：固定保證金或可用資金 %，合約乘上槓桿
 - warmup > 0 時，前 warmup 根只用來計算指標，不交易也不計入結果；回測起點就像那一刻啟用策略：
   當下的判斷只記下來，要等判斷「改變」才進場（跟實際啟用一樣，不會一開始就追進既有的部位）
@@ -9,6 +13,7 @@
 
 from dataclasses import dataclass, field
 
+from ..engine.sizing import protection_prices
 from .base import Candle, Strategy, for_market
 
 
@@ -30,6 +35,8 @@ def run_backtest(
     fee_rate: float | None = None,
     start_equity: float = 10_000,
     warmup: int = 0,
+    stop_loss_pct: float = 0,
+    take_profit_pct: float = 0,
 ) -> BacktestResult:
     if fee_rate is None:
         fee_rate = 0.001 if market == "spot" else 0.0004
@@ -49,9 +56,11 @@ def run_backtest(
     qty = entry = 0.0
     entry_time = 0
     entry_fee = 0.0
+    stop = tp = None
+    blocked = None  # 被停損停利出場時的策略判斷；判斷沒變之前不再進場
     res = BacktestResult()
 
-    def close_at(price: float, t: int):
+    def close_at(price: float, t: int, reason: str):
         nonlocal cash, side, qty, entry
         d = 1 if side == "long" else -1
         pnl = (price - entry) * qty * d
@@ -59,15 +68,19 @@ def run_backtest(
         cash += pnl - fee
         res.trades.append({
             "side": side, "entry_time": entry_time, "exit_time": t, "entry": entry, "exit": price, "qty": qty,
-            "pnl": pnl, "fees": entry_fee + fee, "net": pnl - entry_fee - fee,
+            "pnl": pnl, "fees": entry_fee + fee, "net": pnl - entry_fee - fee, "exit_reason": reason,
         })
         side, qty, entry = "flat", 0.0, 0.0
 
     for i, c in enumerate(candles):
-        if i > 0 and targets[i - 1] != side:  # 前一根收盤的判斷，在這一根開盤執行
-            want = targets[i - 1]
+        want = targets[i - 1] if i > 0 else side  # 前一根收盤的判斷，在這一根開盤執行
+        if blocked is not None and want != blocked:
+            blocked = None
+        if blocked is not None:
+            want = side  # 停損停利後判斷還沒變：維持空手
+        if want != side:
             if side != "flat":
-                close_at(c.open, c.time)
+                close_at(c.open, c.time, "signal")
             if want != "flat":
                 margin = size_value if size_mode == "fixed" else cash * size_value / 100
                 margin = min(margin, cash)
@@ -75,11 +88,24 @@ def run_backtest(
                     side, qty, entry, entry_time = want, margin * lev / c.open, c.open, c.time
                     entry_fee = entry * qty * fee_rate
                     cash -= entry_fee
+                    stop, tp = protection_prices(side, entry, stop_loss_pct, take_profit_pct)
+        if side != "flat" and (stop or tp):
+            long = side == "long"
+            worst, best = (c.low, c.high) if long else (c.high, c.low)
+            if stop and (worst <= stop if long else worst >= stop):
+                # 開盤就已經越過觸發價（跳空）時，只能用開盤價出場
+                held, reason = side, "stop"
+                close_at(min(c.open, stop) if long else max(c.open, stop), c.time, reason)
+                blocked = held
+            elif tp and (best >= tp if long else best <= tp):
+                held, reason = side, "take_profit"
+                close_at(max(c.open, tp) if long else min(c.open, tp), c.time, reason)
+                blocked = held
         unreal = (c.close - entry) * qty * (1 if side == "long" else -1) if side != "flat" else 0.0
         res.equity.append({"time": c.time, "value": cash + unreal})
 
     if side != "flat":  # 最後一根收盤時強制平倉，方便統計
-        close_at(candles[-1].close, candles[-1].time)
+        close_at(candles[-1].close, candles[-1].time, "end")
         res.equity[-1]["value"] = cash
 
     final = res.equity[-1]["value"] if res.equity else start_equity
