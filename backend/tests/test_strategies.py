@@ -249,3 +249,14 @@ def test_bb_squeeze_enters_on_breakout_after_squeeze_and_exits_below_middle():
     # 沒有先盤整：同樣的突破不進場
     t2 = s.targets(candles_from(wide + breakout + fall))
     assert "long" not in t2
+
+
+def test_bb_squeeze_trend_filter_blocks_breakouts_below_ema():
+    # 先在高價區大幅震盪，讓 EMA200 遠高於之後的盤整區
+    wide = [200 + (8 if i % 2 else -8) for i in range(250)]
+    tight = [100 + (0.3 if i % 2 else -0.3) for i in range(60)]
+    breakout = [101, 103, 106, 110, 115]
+    closes = wide + tight + breakout
+    start = len(wide) + len(tight)
+    assert build_strategy("bb_squeeze").targets(candles_from(closes))[start] == "long"  # 預設不過濾
+    assert "long" not in build_strategy("bb_squeeze", {"trend_ema": 200}).targets(candles_from(closes))  # 在 EMA200 之下不做多

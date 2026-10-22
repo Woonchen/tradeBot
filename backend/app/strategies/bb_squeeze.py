@@ -1,5 +1,5 @@
 from .base import Candle, Param, Strategy, Target, register
-from .indicators import crossover, crossunder, sma
+from .indicators import crossover, crossunder, ema, sma
 from .rules import _rolling_std
 
 
@@ -9,7 +9,7 @@ class BollingerSqueeze(Strategy):
     label = "布林通道盤整突破（只做多）"
     description = (
         "通道寬度連續一段時間低於平均（盤整）後，通道開始擴張且收盤價上穿上軌時做多；"
-        "通道縮小且收盤價下穿中軌時出場。只做多，不做空。"
+        "通道縮小且收盤價下穿中軌時出場。可加 EMA 趨勢過濾：收盤價在 EMA 之上才進場。只做多，不做空。"
     )
     params = [
         Param("length", "布林通道長度", "int", 20, min=5, max=200),
@@ -20,6 +20,8 @@ class BollingerSqueeze(Strategy):
               help="連續收窄這麼多根才算盤整（15 分 K 的 20 根 = 5 小時）"),
         Param("breakout_window", "盤整結束後幾根內突破有效", "int", 10, min=0, max=100,
               help="突破常發生在寬度剛開始放大時；超過這麼多根才突破就不算這次盤整的突破"),
+        Param("trend_ema", "趨勢過濾 EMA 長度", "int", 0, min=0, max=1000,
+              help="收盤價高於這條 EMA 才進場（只在上升趨勢做多），常用 200；0 = 不過濾。只影響進場，不影響出場"),
         Param("exit_on_cross", "出場要剛好下穿中軌", "bool", True,
               help="開啟：只有「收盤價下穿中軌」那一根同時通道縮小才出場，錯過就要等下一次下穿；"
                    "關閉：通道縮小時收盤價在中軌下方就出場"),
@@ -27,7 +29,8 @@ class BollingerSqueeze(Strategy):
 
     @property
     def warmup(self) -> int:
-        return max(300, (self.p["length"] + self.p["bw_avg_len"] + self.p["squeeze_bars"]) * 3)
+        # EMA 從 SMA 起算，要多抓幾倍長度才會跟交易所圖表上的值一致
+        return max(300, (self.p["length"] + self.p["bw_avg_len"] + self.p["squeeze_bars"]) * 3, self.p["trend_ema"] * 5)
 
     def targets(self, candles: list[Candle]) -> list[Target]:
         p = self.p
@@ -38,6 +41,7 @@ class BollingerSqueeze(Strategy):
         # 通道寬度用中軌的比例表示，不同價位的幣才能用同一組參數
         width = [None if m is None or not m else (2 * p["mult"] * s) / m for m, s in zip(mid, sd)]
         avg = _sma_partial(width, p["bw_avg_len"])
+        trend = ema(closes, p["trend_ema"]) if p["trend_ema"] else None
 
         out: list[Target] = []
         pos: Target = "flat"
@@ -58,7 +62,8 @@ class BollingerSqueeze(Strategy):
                 run = 0
 
             if pos == "flat":
-                if after_squeeze and expanding and crossover(closes, upper, i):
+                uptrend = trend is None or (trend[i] is not None and closes[i] > trend[i])
+                if after_squeeze and expanding and uptrend and crossover(closes, upper, i):
                     pos = "long"
             else:
                 below = crossunder(closes, mid, i) if p["exit_on_cross"] else (mid[i] is not None and closes[i] < mid[i])
