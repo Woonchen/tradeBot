@@ -95,9 +95,11 @@ async def test_performance_endpoint(client):
                              interval="15m", params={}, enabled=True))
         s.add(StrategyConfig(id=2, name="idle", strategy="ema_cross", symbol="ETHUSDT", market="futures",
                              interval="15m", params={}, enabled=True))
-        s.add_all([sig(1, "strategy", 1, "old name"), sig(2, "strategy", 1), sig(3, "manual")])
+        s.add_all([sig(1, "strategy", 1, "old name"), sig(2, "strategy", 1), sig(3, "manual"),
+                   sig(4, "strategy", 99, "刪掉的策略")])
         s.add_all([trade(0, "open_long", 1, 1), trade(1, "close_long", 1, 2, pnl=4),
-                   trade(2, "open_long", 1, 1), trade(3, "open_short", 2, 3, symbol="X/USDT:USDT")])
+                   trade(2, "open_long", 1, 1), trade(3, "open_short", 2, 3, symbol="X/USDT:USDT"),
+                   trade(4, "open_long", 1, 4, symbol="Y/USDT:USDT")])
         s.add(Position(symbol="BTC/USDT:USDT", market="futures", side="long", qty=1, entry_price=100,
                        unrealized_pnl=2.5, realized_pnl=0, leverage=1, native_protection=False, opened_at=T0))
         await s.commit()
@@ -106,7 +108,7 @@ async def test_performance_endpoint(client):
     assert by_id[1]["trades"] == 1 and by_id[1]["net"] == pytest.approx(2)  # 用 id 歸屬，改名不影響
     assert by_id[1]["open"][0]["unrealized"] == 2.5
     assert by_id[2]["trades"] == 0 and by_id[2]["open"] == []  # 還沒成交的策略也列出來
-    assert [o["label"] for o in d["others"]] == ["手動開倉"]
+    assert [o["label"] for o in d["others"]] == ["手動開倉", "已刪除：刪掉的策略"]  # 刪掉的策略用訊號上記錄的名稱
 
 
 async def test_enabled_at_set_on_enable_and_on_logic_change(client):

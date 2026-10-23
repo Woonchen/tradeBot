@@ -33,10 +33,23 @@ def owner_of(sig: Signal | None) -> Owner:
 OTHER_LABELS = {"tradingview": "TradingView", "manual": "手動開倉", "other": "其他（交易所上直接操作等）"}
 
 
-def owner_label(owner: Owner, strategy_names: dict[int, str]) -> str:
+def names_from_signals(signals: dict[int, Signal]) -> dict[int, str]:
+    """策略 id → 下單當時的策略名稱（策略刪掉後還能顯示它叫什麼）。"""
+    return {
+        sig.raw_payload["strategy_id"]: sig.strategy
+        for sig in signals.values()
+        if owner_of(sig)[0] == "strategy" and sig.strategy
+    }
+
+
+def owner_label(owner: Owner, strategy_names: dict[int, str], signal_names: dict[int, str] | None = None) -> str:
+    """strategy_names：目前存在的策略；signal_names：訊號上記錄的名稱，給已刪除的策略用。"""
     kind, name = owner
     if kind == "strategy":
-        return strategy_names.get(name, f"已刪除的策略 #{name}")  # type: ignore[arg-type]
+        if name in strategy_names:
+            return strategy_names[name]  # type: ignore[index]
+        old = (signal_names or {}).get(name)  # type: ignore[arg-type]
+        return f"已刪除：{old}" if old else f"已刪除的策略 #{name}"
     if kind == "tradingview":
         return f"TradingView：{name}"
     return OTHER_LABELS[kind]

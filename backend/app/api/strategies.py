@@ -9,7 +9,7 @@ from ..db import get_session
 from ..engine.executor import Executor
 from ..engine.risk import load_bot_settings
 from ..exchange.base import UnknownSymbol, normalize_ticker
-from ..engine.performance import OwnerStats, attribute, owner_label
+from ..engine.performance import OwnerStats, attribute, names_from_signals, owner_label
 from ..models import Position, Signal, StrategyConfig, Trade, utcnow
 from ..strategies import INTERVAL_SECONDS, REGISTRY, build_strategy
 from ..strategies.backtest import run_backtest
@@ -108,7 +108,8 @@ async def performance(s: AsyncSession = Depends(get_session)):
 
     configs = (await s.scalars(select(StrategyConfig).order_by(StrategyConfig.id))).all()
     result = [{"config": c.to_dict(), **summary(("strategy", c.id))} for c in configs]
-    others = [{"label": owner_label(owner, {}), **summary(owner)} for owner in sorted(stats, key=str)]
+    old_names = names_from_signals(signals)
+    others = [{"label": owner_label(owner, {}, old_names), **summary(owner)} for owner in sorted(stats, key=str)]
     return {"strategies": result, "others": others}
 
 

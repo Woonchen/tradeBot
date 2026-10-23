@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..engine.executor import Executor
-from ..engine.performance import attribute, owner_label, owner_of
+from ..engine.performance import attribute, names_from_signals, owner_label, owner_of
 from ..engine.risk import daily_net_pnl, utc_day_start
 from ..models import BalanceSnapshot, EquitySnapshot, Position, Signal, StrategyConfig, Trade
 from .deps import get_executor, require_user
@@ -47,7 +47,8 @@ async def positions(status: str = "open", limit: int = Query(200, le=2000), s: A
         t = opener.get(p.id)
         owner = owner_of(signals.get(t.signal_id) if t and t.signal_id else None)
         fee = fees.get(p.id, 0.0)
-        out.append({**p.to_dict(), "fees": fee, "net": p.realized_pnl - fee, "owner": owner_label(owner, names) if t else None})
+        label = owner_label(owner, names, names_from_signals(signals)) if t else None
+        out.append({**p.to_dict(), "fees": fee, "net": p.realized_pnl - fee, "owner": label})
     return out
 
 
