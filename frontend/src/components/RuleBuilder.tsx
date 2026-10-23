@@ -8,7 +8,8 @@ export type Operand =
   | { kind: "sma" | "ema"; length: number; source: Source }
   | { kind: "rsi" | "atr" | "highest" | "lowest"; length: number }
   | { kind: "bb_upper" | "bb_middle" | "bb_lower"; length: number; mult: number }
-  | { kind: "macd" | "macd_signal" | "macd_hist"; fast: number; slow: number; signal: number };
+  | { kind: "macd" | "macd_signal" | "macd_hist"; fast: number; slow: number; signal: number }
+  | { kind: "kd_k" | "kd_d"; length: number };
 type Kind = Operand["kind"];
 type Cmp = ">" | "<" | ">=" | "<=" | "crosses_above" | "crosses_below";
 export interface Condition { left: Operand; cmp: Cmp; right: Operand }
@@ -31,6 +32,8 @@ const KINDS: { kind: Kind; label: string; group: string }[] = [
   { kind: "macd", label: "MACD 線", group: "動能" },
   { kind: "macd_signal", label: "MACD 訊號線", group: "動能" },
   { kind: "macd_hist", label: "MACD 柱狀圖", group: "動能" },
+  { kind: "kd_k", label: "KD 的 K 值", group: "動能" },
+  { kind: "kd_d", label: "KD 的 D 值", group: "動能" },
   { kind: "bb_upper", label: "布林上軌", group: "波動" },
   { kind: "bb_middle", label: "布林中軌", group: "波動" },
   { kind: "bb_lower", label: "布林下軌", group: "波動" },
@@ -55,6 +58,7 @@ function defaultOperand(kind: Kind): Operand {
     case "rsi": case "atr": return { kind, length: 14 };
     case "highest": case "lowest": return { kind, length: 20 };
     case "bb_upper": case "bb_middle": case "bb_lower": return { kind, length: 20, mult: 2 };
+    case "kd_k": case "kd_d": return { kind, length: 9 };
     default: return { kind, fast: 12, slow: 26, signal: 9 };
   }
 }
@@ -69,6 +73,7 @@ export function describeOperand(o: Operand): string {
     case "rsi": case "atr": return `${o.kind.toUpperCase()}(${o.length})`;
     case "highest": case "lowest": return `前 ${o.length} 根${o.kind === "highest" ? "最高" : "最低"}價`;
     case "bb_upper": case "bb_middle": case "bb_lower": return `${label}(${o.length}, ${o.mult})`;
+    case "kd_k": case "kd_d": return `${o.kind === "kd_k" ? "K" : "D"}(${o.length})`;
     default: return `${label}(${o.fast}, ${o.slow}, ${o.signal})`;
   }
 }
@@ -117,6 +122,15 @@ export const TEMPLATES: { name: string; description: string; rules: Rules }[] = 
     rules: {
       long_entry: g("and", cond(CLOSE, ">", { kind: "highest", length: 20 })),
       long_exit: g("or", cond(CLOSE, "<", { kind: "lowest", length: 10 })),
+      short_entry: empty(), short_exit: empty(), stop_loss_pct: 0, take_profit_pct: 0,
+    },
+  },
+  {
+    name: "KD 黃金交叉",
+    description: "K 值在 30 以下向上穿越 D 值（低檔黃金交叉）做多，K 向下穿越 D（死亡交叉）出場",
+    rules: {
+      long_entry: g("and", cond({ kind: "kd_k", length: 9 }, "crosses_above", { kind: "kd_d", length: 9 }), cond({ kind: "kd_k", length: 9 }, "<", val(30))),
+      long_exit: g("or", cond({ kind: "kd_k", length: 9 }, "crosses_below", { kind: "kd_d", length: 9 })),
       short_entry: empty(), short_exit: empty(), stop_loss_pct: 0, take_profit_pct: 0,
     },
   },

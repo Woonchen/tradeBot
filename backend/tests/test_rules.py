@@ -90,3 +90,22 @@ def test_validation_messages():
         build_strategy("rules", rules(long_entry=[cond({"kind": "eval", "code": "1"}, ">", V(0))]))
     with pytest.raises(ValueError):
         build_strategy("rules", rules(long_entry=[cond(CLOSE, ">", V(1))] * 11))
+
+
+def test_kd_matches_hand_calculation_and_drives_rules():
+    from app.strategies.indicators import kd
+
+    highs, lows, closes = [10, 11, 12, 13], [8, 9, 10, 9], [9, 10, 11, 9]
+    k, d = kd(highs, lows, closes, 3)  # 跟前端 K 線圖用同一組手算數字核對
+    assert k[:2] == [None, None] and d[:2] == [None, None]
+    assert k[2] == pytest.approx(58.3333, abs=1e-3) and d[2] == pytest.approx(52.7778, abs=1e-3)
+    assert k[3] == pytest.approx(38.8889, abs=1e-3) and d[3] == pytest.approx(48.1481, abs=1e-3)
+
+    # 條件組合器：K 向上穿越 D 進場、向下穿越出場
+    K, D = {"kind": "kd_k", "length": 9}, {"kind": "kd_d", "length": 9}
+    rules = {"long_entry": {"logic": "and", "conditions": [{"left": K, "cmp": "crosses_above", "right": D}]},
+             "long_exit": {"logic": "or", "conditions": [{"left": K, "cmp": "crosses_below", "right": D}]}}
+    closes = [100 - i for i in range(20)] + [80 + 2 * i for i in range(15)] + [110 - 3 * i for i in range(15)]
+    c = [Candle(i, x, x + 1, x - 1, x, 1) for i, x in enumerate(closes)]
+    t = build_strategy("rules", {"rules": rules}).targets(c)
+    assert "long" in t[20:35] and t[-1] == "flat"

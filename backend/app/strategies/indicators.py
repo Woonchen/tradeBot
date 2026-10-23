@@ -67,6 +67,24 @@ def atr(highs: list[float], lows: list[float], closes: list[float], n: int = 14)
     return rma(tr, n)
 
 
+def kd(highs: list[float], lows: list[float], closes: list[float], n: int = 9) -> tuple[list[float | None], list[float | None]]:
+    """KD 隨機指標（台灣看盤軟體常用的算法，跟前端 K 線圖一致）。
+
+    RSV = (收盤 − n 根最低) ÷ (n 根最高 − n 根最低) × 100；K = ⅔·前K + ⅓·RSV；D = ⅔·前D + ⅓·K；起始都是 50。
+    n 根內完全沒有波動時 RSV 當作 50。
+    """
+    k: list[float | None] = [None] * len(closes)
+    d: list[float | None] = [None] * len(closes)
+    pk = pd = 50.0
+    for i in range(n - 1, len(closes)):
+        hi, lo = max(highs[i - n + 1:i + 1]), min(lows[i - n + 1:i + 1])
+        rsv = 50.0 if hi == lo else (closes[i] - lo) / (hi - lo) * 100
+        pk = pk * 2 / 3 + rsv / 3
+        pd = pd * 2 / 3 + pk / 3
+        k[i], d[i] = pk, pd
+    return k, d
+
+
 def crossover(a: list[float | None], b: list[float | None], i: int) -> bool:
     """第 i 根 a 由下往上穿過 b。"""
     return i > 0 and None not in (a[i], b[i], a[i - 1], b[i - 1]) and a[i - 1] <= b[i - 1] and a[i] > b[i]

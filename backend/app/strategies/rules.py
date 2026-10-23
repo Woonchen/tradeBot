@@ -10,7 +10,7 @@ from typing import Annotated, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .base import Candle, Param, Strategy, Target, register
-from .indicators import atr, crossover, crossunder, ema, rsi, sma
+from .indicators import atr, crossover, crossunder, ema, kd, rsi, sma
 
 Source = Literal["open", "high", "low", "close", "volume"]
 
@@ -58,6 +58,13 @@ class Bollinger(_Op):
     mult: float = Field(2.0, gt=0, le=10)
 
 
+class Kd(_Op):
+    """KD 隨機指標的 K 值或 D 值（0～100）。"""
+
+    kind: Literal["kd_k", "kd_d"]
+    length: int = Field(9, ge=2, le=200)
+
+
 class Macd(_Op):
     kind: Literal["macd", "macd_signal", "macd_hist"]
     fast: int = Field(12, ge=1, le=200)
@@ -72,7 +79,7 @@ class Macd(_Op):
 
 
 Operand = Annotated[
-    Union[Value, Price, MovingAverage, Rsi, Atr, Channel, Bollinger, Macd], Field(discriminator="kind")
+    Union[Value, Price, MovingAverage, Rsi, Atr, Channel, Bollinger, Macd, Kd], Field(discriminator="kind")
 ]
 Comparator = Literal[">", "<", ">=", "<=", "crosses_above", "crosses_below"]
 
@@ -176,6 +183,9 @@ def compute(op: dict, candles: list[Candle], cache: dict) -> list[float | None]:
             sd = _rolling_std(closes, op["length"])
             sign = 1 if k == "bb_upper" else -1
             out = [None if m is None or s is None else m + sign * op["mult"] * s for m, s in zip(mid, sd)]
+    elif k in ("kd_k", "kd_d"):
+        kk, dd = kd(col("high"), col("low"), col("close"), op["length"])
+        out = kk if k == "kd_k" else dd
     elif k.startswith("macd"):
         closes = col("close")
         f, s = ema(closes, op["fast"]), ema(closes, op["slow"])
