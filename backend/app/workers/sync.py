@@ -112,7 +112,7 @@ class SyncWorkers:
         )
         s.add(Trade(
             symbol=p.symbol, market=p.market, side="sell" if p.side == "long" else "buy", intent=f"close_{p.side}",
-            price=price, qty=p.qty, realized_pnl=realized, executed_at=utcnow(),
+            price=price, qty=p.qty, realized_pnl=realized, executed_at=utcnow(), position_id=p.id,
         ))
         p.realized_pnl += realized
         p.unrealized_pnl = 0

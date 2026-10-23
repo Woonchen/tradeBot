@@ -81,6 +81,9 @@ button, input, select { font: inherit; color: inherit; }
 .shell { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
 .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 20px 12px; display: flex; flex-direction: column; gap: 4px; }
 .brand { font-weight: 700; font-size: 18px; padding: 0 10px 16px; display: flex; align-items: center; gap: 8px; }
+.mode-badge { margin: 0 10px 12px; padding: 4px 8px; border-radius: 6px; font-size: 12px; text-align: center; background: var(--surface-2); color: var(--text-2); }
+.mode-badge.live { background: color-mix(in srgb, var(--down) 22%, var(--surface)); color: var(--down-text); font-weight: 700; border: 1px solid var(--down); }
+@media (max-width: 760px) { .mode-badge { margin: 0 8px 0 0; } }
 .nav a { display: block; padding: 8px 10px; border-radius: 6px; color: var(--text-2); }
 .nav a.active, .nav a:hover { background: var(--surface-2); color: var(--text); }
 .sidebar-foot { margin-top: auto; padding: 10px; font-size: 12px; color: var(--text-3); display: grid; gap: 6px; }

@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 import { api, qs, type BotSettings, type Market, type Position, type Trade } from "../api/client";
 import { CandleChart, INTERVAL_SECONDS } from "../components/CandleChart";
-import { fmtPrice, fmtSigned, fmtTime, INTENT_ZH, pnlClass } from "../format";
+import { fmtPrice, fmtQty, fmtSigned, fmtTime, INTENT_ZH, pnlClass } from "../format";
 
 function TradesTable({ trades }: { trades: Trade[] }) {
   if (trades.length === 0) return <div className="empty">沒有成交</div>;
@@ -18,7 +18,7 @@ function TradesTable({ trades }: { trades: Trade[] }) {
               <td className="muted">{fmtTime(t.executed_at)}</td>
               <td className={t.side === "buy" ? "up" : "down"}>{t.side === "buy" ? "▲" : "▼"} {INTENT_ZH[t.intent]}</td>
               <td className="num">{fmtPrice(t.price)}</td>
-              <td className="num">{t.qty}</td>
+              <td className="num">{fmtQty(t.qty)}</td>
               <td className="num">{fmtSigned(-t.fee_usdt, 4)}</td>
               <td className={`num ${pnlClass(t.realized_pnl)}`}>{t.intent.startsWith("close") ? fmtSigned(t.realized_pnl, 4) : "—"}</td>
               <td className="muted">{t.signal_id ? `#${t.signal_id}` : "交易所"}</td>

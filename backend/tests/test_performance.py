@@ -134,3 +134,89 @@ async def test_turning_on_enter_on_enable_restarts_observation(client):
     assert d["last_target"] is None  # 重新開始：下一次判斷就會照目前判斷進場
     d = c.put("/api/strategies/1", json={**body("a"), "enabled": False, "enter_on_enable": True}).json()
     assert d["enter_on_enable"] is True  # 停用時設定保留
+
+
+async def test_dashboard_win_rate_counts_both_fees(client, env):  # noqa: F811
+    from app.api import portfolio
+
+    _, sf = client
+    ex = env[0]
+
+    async def session():
+        async with sf() as s:
+            yield s
+
+    app = FastAPI()
+    app.include_router(portfolio.router)
+    app.dependency_overrides.update({require_user: lambda: "admin", get_executor: lambda: ex, get_session: session})
+    async with sf() as s:
+        s.add_all([
+            trade(0, "open_long", 1, fee=1.0), trade(1, "close_long", 1, pnl=1.5, fee=1.0),  # 1.5 - 1 - 1 = -0.5：賠
+            trade(2, "open_long", 1, fee=0.1), trade(3, "close_long", 1, pnl=5.0, fee=0.1),  # 賺
+            trade(4, "open_long", 1, fee=0.1),                                              # 還沒平倉，不算
+        ])
+        await s.commit()
+    d = TestClient(app).get("/api/summary").json()
+    assert d["closed_trades"] == 2 and d["win_rate"] == pytest.approx(0.5)  # 舊算法只扣平倉手續費，會算成 2 勝
+
+
+# ------------------------------------------------------------------ 成交 → 部位
+def test_spot_fee_in_coin_still_closes_the_trade():
+    """現貨買入手續費從幣扣：買 0.00612、賣 0.00611388，數量對不起來，但部位已關就是一筆完整交易。"""
+    pos = Position(id=1, symbol="BTC/USDT", market="spot", side="long", qty=0.00611388, entry_price=81671.81,
+                   realized_pnl=-3.0, unrealized_pnl=0, leverage=1, native_protection=False,
+                   opened_at=T0, closed_at=T0 + timedelta(hours=15))
+    t_open = trade(0, "open_long", 0.00612, 1, fee=0.4998, symbol="BTC/USDT")
+    t_close = trade(900, "close_long", 0.00611388, None, pnl=-3.0, fee=0.48, symbol="BTC/USDT")
+    t_open.market = t_close.market = "spot"
+    t_open.position_id = t_close.position_id = 1
+    s = attribute([t_open, t_close], {1: sig(1, "strategy", 6)}, {1: pos})[("strategy", 6)].summary()
+    assert s["trades"] == 1 and s["open"] == []
+    assert s["net"] == pytest.approx(-3.0 - 0.4998 - 0.48)
+    # 舊算法（不看部位）會因為差 0.00000612 而永遠算成持倉中
+    legacy = attribute([t_open, t_close], {1: sig(1, "strategy", 6)})[("strategy", 6)].summary()
+    assert legacy["trades"] == 0 and len(legacy["open"]) == 1
+
+
+async def test_executor_records_position_on_every_fill(env):  # noqa: F811
+    from sqlalchemy import select
+
+    from .test_executor import run
+
+    ex, sf, ad = env
+    await run(ex, ticker="BTCUSDT", market="futures", action="buy", target="long")
+    await run(ex, ticker="BTCUSDT", market="futures", action="sell", target="short")  # 反手：平多 + 開空
+    async with sf() as s:
+        trades = (await s.scalars(select(Trade).order_by(Trade.id))).all()
+        positions = {p.id: p for p in (await s.scalars(select(Position))).all()}
+    assert [(t.intent, t.position_id) for t in trades] == [("open_long", 1), ("close_long", 1), ("open_short", 2)]
+    st = attribute(list(trades), {}, positions)[("other", "")].summary()
+    assert st["trades"] == 1 and len(st["open"]) == 1 and st["open"][0]["side"] == "short"
+
+
+async def test_positions_api_shows_net_and_owner(client, env):  # noqa: F811
+    from app.api import portfolio
+
+    _, sf = client
+
+    async def session():
+        async with sf() as s:
+            yield s
+
+    app = FastAPI()
+    app.include_router(portfolio.router)
+    app.dependency_overrides.update({require_user: lambda: "admin", get_executor: lambda: env[0], get_session: session})
+    async with sf() as s:
+        s.add(StrategyConfig(id=6, name="BTC 日線 SMA50", strategy="rules", symbol="BTCUSDT", market="spot",
+                             interval="1d", params={}, enabled=True))
+        s.add(sig(1, "strategy", 6, "舊名稱"))
+        s.add(Position(id=1, symbol="BTC/USDT:USDT", market="futures", side="long", qty=1, entry_price=100,
+                       realized_pnl=4.0, unrealized_pnl=0, leverage=1, native_protection=False,
+                       opened_at=T0, closed_at=T0 + timedelta(hours=1)))
+        t1, t2 = trade(0, "open_long", 1, 1, fee=0.5), trade(60, "close_long", 1, None, pnl=4.0, fee=0.5)
+        t1.position_id = t2.position_id = 1
+        s.add_all([t1, t2])
+        await s.commit()
+    (p,) = TestClient(app).get("/api/positions?status=closed").json()
+    assert p["owner"] == "BTC 日線 SMA50"  # 用策略 id 找目前的名稱
+    assert p["fees"] == pytest.approx(1.0) and p["net"] == pytest.approx(3.0)

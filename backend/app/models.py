@@ -79,6 +79,9 @@ class Trade(Base):
     # 交易所自行平倉（原生停損、強平、手動在交易所操作）時沒有對應的 order
     order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), index=True)
     signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id"))
+    # 這筆成交屬於哪個部位（開倉、加倉、平倉都記）；一個部位從開到關就是一筆完整交易。
+    # 不能用成交數量相減來判斷是否平完：現貨買入手續費從幣扣、殘量直接結案時數量都對不起來
+    position_id: Mapped[int | None] = mapped_column(ForeignKey("positions.id", name="fk_trades_position_id"), index=True)
     exchange_trade_id: Mapped[str | None] = mapped_column(String(64))
     symbol: Mapped[str] = mapped_column(String(40), index=True)
     market: Mapped[str] = mapped_column(String(10), index=True)

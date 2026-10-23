@@ -7,11 +7,10 @@ import {
 import { BacktestChart } from "../components/BacktestChart";
 import { RuleBuilder, rulesForMarket, type Rules } from "../components/RuleBuilder";
 import { EquityChart } from "../components/EquityChart";
-import { fmtNum, fmtPct, fmtPrice, fmtSigned, fmtTime, pnlClass } from "../format";
+import { fmtNum, fmtPct, fmtPrice, fmtSigned, fmtTime, INTERVAL_SEC, pnlClass } from "../format";
 
 const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
 const BARS = [1000, 5000, 10000, 20000];
-const INTERVAL_SEC: Record<string, number> = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400 };
 const approxDays = (bars: number, interval: string) => {
   const days = (bars * INTERVAL_SEC[interval]) / 86400;
   return days < 1 ? `約 ${Math.round(days * 24)} 小時` : `約 ${Math.round(days)} 天`;

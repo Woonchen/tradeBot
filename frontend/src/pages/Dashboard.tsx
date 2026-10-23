@@ -4,6 +4,7 @@ import { api, type ActivityLog, type EquityPoint, type Position, type Summary } 
 import { useLivePrices } from "../api/liveSocket";
 import { ActivityTimeline } from "../components/ActivityTimeline";
 import { EquityChart } from "../components/EquityChart";
+import { StrategyStatus } from "../components/StrategyStatus";
 import { fmtNum, fmtPct, fmtSigned, livePnl, pnlClass } from "../format";
 import { BotControls } from "./BotControls";
 import { PositionsTable } from "./Positions";
@@ -41,7 +42,7 @@ export function Dashboard() {
         <Tile label="今日已實現（扣手續費）" value={fmtSigned(s?.realized_today)} cls={pnlClass(s?.realized_today)} />
         <Tile label="未實現損益（即時）" value={fmtSigned(unrealized)} cls={pnlClass(unrealized)} sub={`${positions.data?.length ?? s?.open_positions ?? 0} 個持倉`} />
         <Tile label="累計已實現" value={fmtSigned(s?.realized_total)} cls={pnlClass(s?.realized_total)} sub={`總報酬 ${totalReturn === null ? "—" : fmtSigned(totalReturn * 100) + "%"}`} />
-        <Tile label="勝率" value={fmtPct(s?.win_rate)} sub={`${s?.closed_trades ?? 0} 筆平倉 · 最大回撤 ${fmtPct(s?.max_drawdown)}`} />
+        <Tile label="勝率" value={fmtPct(s?.win_rate)} sub={`${s?.closed_trades ?? 0} 筆完整交易 · 最大回撤 ${fmtPct(s?.max_drawdown)}`} />
       </div>
       <div className="two-col">
         <div className="grid">
@@ -49,6 +50,7 @@ export function Dashboard() {
             <h2>總權益（近 7 天，USDT）</h2>
             <EquityChart points={equity.data ?? []} short />
           </div>
+          <StrategyStatus />
           <div className="card">
             <h2>目前持倉</h2>
             <PositionsTable compact />

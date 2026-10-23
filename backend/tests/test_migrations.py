@@ -87,3 +87,41 @@ async def test_0002_backfills_enabled_at_for_enabled_strategies(tmp_path):
         rows = (await conn.execute(text("SELECT id, enabled_at FROM strategy_configs ORDER BY id"))).all()
     assert [(i, str(v)[:10] if v else None) for i, v in rows] == [(1, "2026-01-01"), (2, None)]
     await engine.dispose()
+
+
+async def test_0004_links_existing_trades_to_positions(tmp_path):
+    from alembic import command
+    from alembic.config import Config
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'p.db'}")
+
+    def to_0003(conn):
+        cfg = Config()
+        cfg.set_main_option("script_location", "app/migrations")
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "0003")
+
+    async with engine.begin() as conn:
+        await conn.run_sync(to_0003)
+        await conn.execute(text(
+            "INSERT INTO positions (id, symbol, market, side, qty, entry_price, unrealized_pnl, realized_pnl, leverage, "
+            "native_protection, opened_at, closed_at) VALUES "
+            "(1, 'BTC/USDT', 'spot', 'long', 0.0061, 100, 0, 0, 1, 0, '2026-10-22 09:12:55.393495', '2026-10-23 00:00:05.580000'),"
+            # 反手：1 號平倉後立刻開 2 號
+            "(2, 'ETH/USDT:USDT', 'futures', 'long', 1, 100, 0, 0, 1, 0, '2026-10-22 10:00:00.002', '2026-10-22 11:00:00.010'),"
+            "(3, 'ETH/USDT:USDT', 'futures', 'short', 1, 100, 0, 0, 1, 0, '2026-10-22 11:00:00.030', NULL)"
+        ))
+        await conn.execute(text(
+            "INSERT INTO trades (id, symbol, market, side, intent, price, qty, fee, fee_asset, fee_usdt, realized_pnl, executed_at) VALUES "
+            "(1, 'BTC/USDT', 'spot', 'buy', 'open_long', 100, 0.00612, 0, 'BTC', 0.5, 0, '2026-10-22 09:12:55.392069'),"
+            "(2, 'BTC/USDT', 'spot', 'sell', 'close_long', 100, 0.0061, 0, 'USDT', 0.5, -1, '2026-10-23 00:00:05.570114'),"
+            "(3, 'ETH/USDT:USDT', 'futures', 'buy', 'open_long', 100, 1, 0, 'USDT', 0.1, 0, '2026-10-22 10:00:00.001'),"
+            "(4, 'ETH/USDT:USDT', 'futures', 'sell', 'close_long', 100, 1, 0, 'USDT', 0.1, 2, '2026-10-22 11:00:00.005'),"
+            "(5, 'ETH/USDT:USDT', 'futures', 'sell', 'open_short', 100, 1, 0, 'USDT', 0.1, 0, '2026-10-22 11:00:00.020')"
+        ))
+    async with engine.begin() as conn:
+        await conn.run_sync(migrate.upgrade)
+    async with engine.connect() as conn:
+        rows = (await conn.execute(text("SELECT id, position_id FROM trades ORDER BY id"))).all()
+    assert [tuple(r) for r in rows] == [(1, 1), (2, 1), (3, 2), (4, 2), (5, 3)]
+    await engine.dispose()

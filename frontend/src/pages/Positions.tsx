@@ -2,7 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, type Position } from "../api/client";
 import { useLivePrices } from "../api/liveSocket";
-import { fmtPrice, fmtSigned, fmtTime, livePnl, pnlClass } from "../format";
+import { fmtNum, fmtPrice, fmtQty, fmtSigned, fmtTime, livePnl, pnlClass } from "../format";
 
 export function PositionsTable({ compact = false, status = "open" }: { compact?: boolean; status?: "open" | "closed" }) {
   const { data = [] } = useQuery({
@@ -18,7 +18,7 @@ export function PositionsTable({ compact = false, status = "open" }: { compact?:
       <table>
         <thead>
           <tr>
-            <th>交易對</th><th>方向</th><th className="num">數量</th><th className="num">開倉價</th>
+            <th>交易對</th>{!compact && <th>開倉來源</th>}<th>方向</th><th className="num">數量</th><th className="num">開倉價</th>
             {status === "open" ? (
               <>
                 <th className="num">標記價</th><th className="num">未實現損益</th>
@@ -26,7 +26,7 @@ export function PositionsTable({ compact = false, status = "open" }: { compact?:
                 <th />
               </>
             ) : (
-              <><th className="num">已實現損益</th><th>開倉</th><th>平倉</th></>
+              <><th className="num">淨損益</th><th className="num">手續費</th><th>開倉</th><th>平倉</th></>
             )}
           </tr>
         </thead>
@@ -36,8 +36,9 @@ export function PositionsTable({ compact = false, status = "open" }: { compact?:
             return (
             <tr key={p.id}>
               <td>{p.symbol} <span className="muted">{p.market === "futures" ? "合約" : "現貨"}</span></td>
+              {!compact && <td className={p.owner ? "" : "muted"}>{p.owner ?? "—"}</td>}
               <td><span className={`badge ${p.side}`}>{p.side === "long" ? "▲ 多" : "▼ 空"}</span></td>
-              <td className="num">{p.qty}</td>
+              <td className="num">{fmtQty(p.qty)}</td>
               <td className="num">{fmtPrice(p.entry_price)}</td>
               {status === "open" ? (
                 <>
@@ -61,7 +62,8 @@ export function PositionsTable({ compact = false, status = "open" }: { compact?:
                 </>
               ) : (
                 <>
-                  <td className={`num ${pnlClass(p.realized_pnl)}`}>{fmtSigned(p.realized_pnl, 4)}</td>
+                  <td className={`num ${pnlClass(p.net)}`} title={`已實現 ${fmtSigned(p.realized_pnl, 4)}，扣開平倉手續費 ${fmtNum(p.fees, 4)}`}>{fmtSigned(p.net, 4)}</td>
+                  <td className="num muted">{fmtNum(p.fees, 4)}</td>
                   <td className="muted">{fmtTime(p.opened_at)}</td>
                   <td className="muted">{p.closed_at && fmtTime(p.closed_at)}</td>
                 </>

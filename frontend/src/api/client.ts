@@ -17,6 +17,12 @@ export interface Position {
   mark_price: number | null; unrealized_pnl: number; realized_pnl: number; leverage: number;
   liquidation_price: number | null; stop_price: number | null; take_profit_price: number | null;
   native_protection: boolean; opened_at: string; closed_at: string | null;
+  /** 開倉＋平倉手續費（USDT） */
+  fees: number;
+  /** 已實現損益扣掉手續費 */
+  net: number;
+  /** 誰開的倉：策略名稱、TradingView、手動…；找不到成交紀錄時是 null */
+  owner: string | null;
 }
 export interface ActivityLog {
   id: number; ts: string; level: "info" | "warn" | "error"; category: string; message: string;
@@ -38,6 +44,11 @@ export interface BotSettings {
 export interface SignalTrace { signal: Signal; orders: Order[]; trades: Trade[]; logs: ActivityLog[] }
 
 const TOKEN_KEY = "tradebot.token";
+
+/** 目前連的是哪種帳戶（側邊欄、危險操作的確認都會用到） */
+export const modeLabel = (b: Pick<BotSettings, "execution_mode" | "testnet">) =>
+  b.execution_mode === "paper" ? "Paper 本地模擬" : b.testnet ? "Binance Demo 帳戶" : "Binance 正式帳戶（真錢）";
+export const isLive = (b: Pick<BotSettings, "execution_mode" | "testnet">) => b.execution_mode === "binance" && !b.testnet;
 
 export function getToken(): string | null {
   try {

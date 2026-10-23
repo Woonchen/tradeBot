@@ -9,7 +9,7 @@ from ..db import get_session
 from ..engine.executor import Executor
 from ..engine.risk import load_bot_settings
 from ..exchange.base import UnknownSymbol, normalize_ticker
-from ..engine.performance import OwnerStats, attribute
+from ..engine.performance import OwnerStats, attribute, owner_label
 from ..models import Position, Signal, StrategyConfig, Trade, utcnow
 from ..strategies import INTERVAL_SECONDS, REGISTRY, build_strategy
 from ..strategies.backtest import run_backtest
@@ -94,7 +94,9 @@ async def performance(s: AsyncSession = Depends(get_session)):
     trades = (await s.scalars(select(Trade).order_by(Trade.executed_at, Trade.id))).all()
     sig_ids = {t.signal_id for t in trades if t.signal_id}
     signals = {x.id: x for x in (await s.scalars(select(Signal).where(Signal.id.in_(sig_ids)))).all()} if sig_ids else {}
-    stats = attribute(list(trades), signals)
+    pos_ids = {t.position_id for t in trades if t.position_id}
+    positions = {p.id: p for p in (await s.scalars(select(Position).where(Position.id.in_(pos_ids)))).all()} if pos_ids else {}
+    stats = attribute(list(trades), signals, positions)
     unrealized = {(p.symbol, p.market): p.unrealized_pnl
                   for p in (await s.scalars(select(Position).where(Position.closed_at.is_(None)))).all()}
 
@@ -106,12 +108,7 @@ async def performance(s: AsyncSession = Depends(get_session)):
 
     configs = (await s.scalars(select(StrategyConfig).order_by(StrategyConfig.id))).all()
     result = [{"config": c.to_dict(), **summary(("strategy", c.id))} for c in configs]
-    labels = {"tradingview": "TradingView", "manual": "手動開倉", "other": "其他（交易所上直接操作等）"}
-    others = []
-    for owner in sorted(stats, key=str):
-        kind, name = owner
-        label = f"已刪除的策略 #{name}" if kind == "strategy" else (f"TradingView：{name}" if kind == "tradingview" else labels[kind])
-        others.append({"label": label, **summary(owner)})
+    others = [{"label": owner_label(owner, {}), **summary(owner)} for owner in sorted(stats, key=str)]
     return {"strategies": result, "others": others}
 
 

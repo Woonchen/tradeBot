@@ -304,18 +304,22 @@ class Executor:
         s.add(trade)
 
         is_dust = new.side is not None and new.qty * price < adapter.min_notional(order.symbol) and order.intent.startswith("close")
+        closed = None
         if pos and (new.side != pos.side or is_dust):
             pos.qty = new.qty if is_dust else pos.qty
             pos.realized_pnl += realized
             pos.unrealized_pnl = 0
             pos.closed_at = utcnow()
-            pos = None
+            closed, pos = pos, None
         if new.side and not is_dust:
             if pos is None:
                 pos = Position(symbol=order.symbol, market=order.market, leverage=order.leverage or 1)
                 s.add(pos)
             pos.side, pos.qty, pos.entry_price, pos.mark_price = new.side, new.qty, new.entry, price
             pos.realized_pnl = (pos.realized_pnl or 0) + realized
+        await s.flush()  # 新部位要先寫入才有 id
+        owner = closed or pos  # 平倉（含一次成交就反手）算給被平掉的部位
+        trade.position_id = owner.id if owner else None
         await s.commit()
 
         pnl = f"，已實現損益 {realized:+.4f} USDT" if order.intent.startswith("close") else ""

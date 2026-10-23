@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type BotSettings } from "../api/client";
+import { api, modeLabel, type BotSettings } from "../api/client";
 
 export function BotControls() {
   const qc = useQueryClient();
@@ -26,7 +26,7 @@ export function BotControls() {
       <button
         className="btn danger"
         disabled={closeAll.isPending}
-        onClick={() => confirm("確定要市價平掉所有持倉並停用 Bot 嗎？") && closeAll.mutate()}
+        onClick={() => confirm(`【${modeLabel(bot.data)}】確定要市價平掉所有持倉並停用 Bot 嗎？`) && closeAll.mutate()}
       >
         緊急全部平倉
       </button>

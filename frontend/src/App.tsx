@@ -1,6 +1,7 @@
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { getToken, setToken } from "./api/client";
+import { api, getToken, isLive, modeLabel, setToken, type BotSettings } from "./api/client";
 import { useLiveEvents } from "./api/useLiveEvents";
 import { Activity } from "./pages/Activity";
 import { ChartPage } from "./pages/ChartPage";
@@ -16,12 +17,21 @@ const NAV = [
   ["/activity", "操作軌跡"], ["/settings", "設定"],
 ];
 
+/** 側邊欄常駐顯示目前的帳戶；正式帳戶用醒目的紅色，避免忘記正在用真錢。 */
+function ModeBadge() {
+  const bot = useQuery({ queryKey: ["bot"], queryFn: () => api<BotSettings>("/api/bot") });
+  if (!bot.data) return null;
+  const live = isLive(bot.data);
+  return <div className={`mode-badge${live ? " live" : ""}`} title="在後端 .env 設定 EXECUTION_MODE / TESTNET">{live && "⚠ "}{modeLabel(bot.data)}</div>;
+}
+
 function Shell() {
   const connected = useLiveEvents();
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">📈 TradeBot</div>
+        <ModeBadge />
         <nav className="nav">
           {NAV.map(([to, label]) => <NavLink key={to} to={to} end={to === "/"}>{label}</NavLink>)}
         </nav>
