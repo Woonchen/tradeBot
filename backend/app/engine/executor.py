@@ -8,10 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..exchange.base import STABLES, ExchangeAdapter, OrderResult, UnknownSymbol, normalize_ticker
-from ..models import Order, Position, Signal, Trade, utcnow
+from ..models import Order, Position, Signal, StrategyConfig, Trade, utcnow
 from ..services.event_bus import EventBus
 from .ledger import LedgerState, apply_fill
-from .risk import Reject, check_open_risk, daily_net_pnl, load_bot_settings
+from .risk import Reject, check_open_risk, daily_net_pnl, load_bot_settings, order_rules
 from .sizing import compute_order_size, protection_prices
 
 log = logging.getLogger(__name__)
@@ -202,7 +202,11 @@ class Executor:
             intent=f"close_{pos.side}", reduce_only=adapter.market == "futures", leverage=pos.leverage,
         )
 
-    async def _open_position(self, s: AsyncSession, sig: Signal, adapter: ExchangeAdapter, cfg, symbol: str):
+    async def _open_position(self, s: AsyncSession, sig: Signal, adapter: ExchangeAdapter, bot, symbol: str):
+        # 策略送來的訊號用策略自己的下單規則（沒填的沿用設定頁）
+        strategy_id = (sig.raw_payload or {}).get("strategy_id") if sig.source == "strategy" else None
+        strategy = await s.get(StrategyConfig, strategy_id) if isinstance(strategy_id, int) else None
+        cfg = order_rules(bot, strategy)
         lev = cfg.leverage if adapter.market == "futures" else 1
         price = await adapter.fetch_price(symbol)
         wallet = await adapter.fetch_wallet()

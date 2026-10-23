@@ -140,6 +140,7 @@ class StrategyRunner:
         # 跟實際下單一樣：啟用後第一次只記下判斷（除非設定了立即進場），之後判斷改變才動作
         act = (cfg.enter_on_enable and target != "flat") if first else target != prev
         done: list[str] = []
+        rates = await self.sentiment.funding_series(cfg.symbol) if cfg.market == "futures" and self.sentiment else []
         async with self.ex.sf() as s:
             bot = await load_bot_settings(s)
             t = await s.scalar(select(ShadowTrade).where(
@@ -147,9 +148,12 @@ class StrategyRunner:
             ))
             if t and (hit := shadow.protection_exit(t, candles, sec)):
                 price, when, reason = hit
+                shadow.apply_funding(t, rates, candles, sec, until=when - sec)  # 觸發那根開盤之後就沒有持倉了
                 shadow.close(t, price, when, reason)
                 done.append(f"{'停損' if reason == 'stop' else '停利'}出場 @ {price:g}，淨損益 {shadow.net(t):+.2f} USDT")
                 t = None
+            if t:  # 結算到現在（這根收盤 = 下一根開盤，結算先於下單）
+                shadow.apply_funding(t, rates, candles, sec, until=bar.time + sec)
             if act:
                 if t and t.side != target:
                     shadow.close(t, bar.close, bar.time + sec, "signal")

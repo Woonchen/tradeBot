@@ -28,7 +28,16 @@ const protectionText = (sl: number, tp: number) =>
   sl || tp ? `；停損 ${sl ? `${sl}%` : "不設"}、停利 ${tp ? `${tp}%` : "不設"}` : "；不設停損停利";
 const TARGET_ZH: Record<string, string> = { long: "▲ 多", short: "▼ 空", flat: "空手" };
 
-type Draft = {
+/** 策略自己的下單規則（每項 null = 沿用「設定」頁） */
+type OrderRules = Pick<StrategyConfig, "size_mode" | "size_value" | "leverage" | "stop_loss_pct" | "take_profit_pct">;
+const ORDER_KEYS = ["size_mode", "size_value", "leverage", "stop_loss_pct", "take_profit_pct"] as const;
+const NO_ORDER: OrderRules = { size_mode: null, size_value: null, leverage: null, stop_loss_pct: null, take_profit_pct: null };
+/** 只取有設定的欄位（送給 API；沒送的由後端用設定頁補） */
+const orderBody = (o: OrderRules) => Object.fromEntries(ORDER_KEYS.filter((k) => o[k] !== null).map((k) => [k, o[k]]));
+const hasOrder = (o: OrderRules) => ORDER_KEYS.some((k) => o[k] !== null);
+const pickOrder = (c: OrderRules): OrderRules => Object.fromEntries(ORDER_KEYS.map((k) => [k, c[k]])) as OrderRules;
+
+type Draft = OrderRules & {
   id?: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
   params: Record<string, any>; enabled: boolean; enter_on_enable: boolean; mode: "live" | "shadow";
 };
@@ -202,7 +211,7 @@ function SweepPanel({ info, d, bars, sizing }: { info: StrategyInfo; d: Draft; b
       body: JSON.stringify({
         strategy: d.strategy, symbol: d.symbol, market: d.market, interval: d.interval,
         params: cleanParams(info, d.params, d.market), bars, compare_earlier: true, enter_on_enable: d.enter_on_enable,
-        ...(sizing ?? {}), x: { param: x!.param, values: xs }, ...(y ? { y: { param: y.param, values: ys } } : {}),
+        ...(sizing ?? orderBody(d)), x: { param: x!.param, values: xs }, ...(y ? { y: { param: y.param, values: ys } } : {}),
       }),
     }),
   });
@@ -285,7 +294,7 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
       body: JSON.stringify({
         strategy: d.strategy, symbol: d.symbol, market: d.market, interval: d.interval,
         params: cleanParams(info, d.params, d.market), bars, compare_earlier: req.compare, enter_on_enable: d.enter_on_enable,
-        ...(sizing ?? {}),
+        ...(sizing ?? orderBody(d)), // 沒有另外自訂時，回測用這個策略的下單規則
       }),
     }),
   });
@@ -297,6 +306,13 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["strategies"] }); onDone(); },
   });
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setD({ ...d, [k]: v });
+  // 實際會用的下單規則：策略有設定的用策略的，沒填的用設定頁
+  const eff = bot.data && {
+    size_mode: d.size_mode ?? bot.data.size_mode, size_value: d.size_value ?? bot.data.size_value,
+    leverage: d.leverage ?? bot.data.leverage, stop_loss_pct: d.stop_loss_pct ?? bot.data.stop_loss_pct,
+    take_profit_pct: d.take_profit_pct ?? bot.data.take_profit_pct,
+  };
+  const custom = hasOrder(d);
 
   return (
     <div className="card" style={{ marginBottom: 16 }}>
@@ -337,6 +353,43 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
         <RuleBuilder key={p.name} market={d.market} value={d.params[p.name] ?? p.default}
           onChange={(v) => set("params", { ...d.params, [p.name]: v })} />
       ))}
+      <div className="bt-panel">
+        <h2 style={{ margin: 0 }}>下單設定</h2>
+        <div className="form-grid">
+          <label className="field">金額、槓桿、停損停利
+            <select value={custom ? "custom" : "bot"} onChange={(e) => setD(e.target.value === "bot" || !eff ? { ...d, ...NO_ORDER } : { ...d, ...eff })}>
+              <option value="bot">照「設定」頁</option>
+              <option value="custom">這個策略自訂</option>
+            </select>
+            <small>保證金模式、最多同時持倉、每日虧損上限一律照「設定」頁</small>
+          </label>
+          {custom && eff && (
+            <>
+              <label className="field">計算方式
+                <select value={eff.size_mode} onChange={(e) => set("size_mode", e.target.value as Draft["size_mode"])}>
+                  <option value="fixed">每筆固定 USDT</option><option value="percent">可用資金 %</option>
+                </select>
+              </label>
+              <label className="field">{eff.size_mode === "fixed" ? "每筆保證金（USDT）" : "每筆使用可用資金（%）"}
+                <input type="number" min={0} step="any" value={eff.size_value} onChange={(e) => set("size_value", Number(e.target.value))} />
+              </label>
+              {d.market === "futures" && (
+                <label className="field">槓桿（倍）
+                  <input type="number" min={1} max={125} step={1} value={eff.leverage} onChange={(e) => set("leverage", Number(e.target.value))} />
+                </label>
+              )}
+              <label className="field">停損（價格反向 %）
+                <input type="number" min={0} step="any" value={eff.stop_loss_pct} onChange={(e) => set("stop_loss_pct", Number(e.target.value))} />
+                <small>0 = 不設</small>
+              </label>
+              <label className="field">停利（價格順向 %）
+                <input type="number" min={0} step="any" value={eff.take_profit_pct} onChange={(e) => set("take_profit_pct", Number(e.target.value))} />
+                <small>0 = 不設</small>
+              </label>
+            </>
+          )}
+        </div>
+      </div>
       <label className="field" style={{ maxWidth: 420, marginTop: 14 }}>執行方式
         <select value={d.mode} onChange={(e) => set("mode", e.target.value as Draft["mode"])}>
           <option value="live">實際下單</option>
@@ -365,17 +418,16 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
             <small>越長越可靠；20,000 根約需 10–30 秒</small>
           </label>
           <label className="field">下單金額
-            <select value={sizing ? "custom" : "bot"} onChange={(e) => setSizing(e.target.value === "bot" || !bot.data ? null : {
-              size_mode: bot.data.size_mode, size_value: bot.data.size_value, leverage: bot.data.leverage, start_equity: 10000,
-              stop_loss_pct: bot.data.stop_loss_pct, take_profit_pct: bot.data.take_profit_pct,
+            <select value={sizing ? "custom" : "bot"} onChange={(e) => setSizing(e.target.value === "bot" || !eff ? null : {
+              ...eff, start_equity: 10000,
             })}>
-              <option value="bot">照「設定」頁</option>
-              <option value="custom">自訂</option>
+              <option value="bot">照這個策略的下單設定</option>
+              <option value="custom">自訂（只用在這次回測）</option>
             </select>
-            {!sizing && bot.data && (
+            {!sizing && eff && (
               <small>
-                {bot.data.size_mode === "fixed" ? `每筆 ${bot.data.size_value} USDT 保證金` : `可用資金的 ${bot.data.size_value}%`}
-                {d.market === "futures" && ` × ${bot.data.leverage} 倍槓桿`}{protectionText(bot.data.stop_loss_pct, bot.data.take_profit_pct)}，起始 10,000 USDT
+                {eff.size_mode === "fixed" ? `每筆 ${eff.size_value} USDT 保證金` : `可用資金的 ${eff.size_value}%`}
+                {d.market === "futures" && ` × ${eff.leverage} 倍槓桿`}{protectionText(eff.stop_loss_pct, eff.take_profit_pct)}，起始 10,000 USDT
               </small>
             )}
           </label>
@@ -464,7 +516,7 @@ function Performance({ labelOf }: { labelOf: (key: string) => string }) {
       method: "POST",
       body: JSON.stringify({
         strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params,
-        bars: Math.min(barsSince(c), 20000), enter_on_enable: c.enter_on_enable,
+        bars: Math.min(barsSince(c), 20000), enter_on_enable: c.enter_on_enable, ...orderBody(c),
       }),
     }),
   });
@@ -534,7 +586,7 @@ export function Strategies() {
       method: "PUT",
       body: JSON.stringify({
         name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params,
-        enabled: !c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode,
+        enabled: !c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode, ...pickOrder(c),
       }),
     }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["strategies"] }),
@@ -548,7 +600,7 @@ export function Strategies() {
   const labelOf = (key: string) => catalog.data.find((c) => c.key === key)?.label ?? key;
   const newDraft = (): Draft => {
     const first = catalog.data[0];
-    return { name: autoName("BTCUSDT", first.label, "1h"), strategy: first.key, symbol: "BTCUSDT", market: "futures", interval: "1h", params: defaults(first), enabled: false, enter_on_enable: false, mode: "live" };
+    return { name: autoName("BTCUSDT", first.label, "1h"), strategy: first.key, symbol: "BTCUSDT", market: "futures", interval: "1h", params: defaults(first), enabled: false, enter_on_enable: false, mode: "live", ...NO_ORDER };
   };
 
   return (
@@ -567,7 +619,10 @@ export function Strategies() {
               <thead><tr><th>名稱</th><th>策略</th><th>交易對</th><th>週期</th><th>狀態</th><th>目前判斷</th><th>最後判斷時間</th><th /></tr></thead>
               <tbody>{configs.data!.map((c) => (
                 <tr key={c.id}>
-                  <td>{c.name}{c.mode === "shadow" && <span className="badge" style={{ marginLeft: 6 }}>影子</span>}</td>
+                  <td>
+                    {c.name}{c.mode === "shadow" && <span className="badge" style={{ marginLeft: 6 }}>影子</span>}
+                    {hasOrder(c) && <span className="badge" style={{ marginLeft: 6 }} title="這個策略有自己的下單金額／槓桿／停損停利">自訂下單</span>}
+                  </td>
                   <td className="muted">{labelOf(c.strategy)}</td>
                   <td>{c.symbol} <span className="muted">{c.market === "futures" ? "合約" : "現貨"}</span></td>
                   <td>{c.interval}</td>
@@ -579,7 +634,7 @@ export function Strategies() {
                   <td className="muted">{c.last_bar_time ? fmtTime(new Date(c.last_bar_time * 1000).toISOString()) : "—"}</td>
                   <td style={{ display: "flex", gap: 6 }}>
                     <button className="btn small" disabled={toggle.isPending} onClick={() => toggle.mutate(c)}>{c.enabled ? "停用" : "啟用"}</button>
-                    <button className="btn small" onClick={() => setEditing({ id: c.id, name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, enabled: c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode })}>編輯／回測</button>
+                    <button className="btn small" onClick={() => setEditing({ id: c.id, name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, enabled: c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode, ...pickOrder(c) })}>編輯／回測</button>
                     <button className="btn small danger" disabled={remove.isPending} onClick={() => confirm(`刪除策略「${c.name}」？既有持倉不會自動平倉。`) && remove.mutate(c.id)}>刪除</button>
                   </td>
                 </tr>

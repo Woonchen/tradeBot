@@ -103,6 +103,9 @@ export interface StrategyConfig {
   params: Record<string, any>; enabled: boolean; enter_on_enable: boolean; last_target: string | null;
   /** live：真的下單；shadow：影子模式，只記錄虛擬交易 */
   mode: "live" | "shadow";
+  /** 這個策略自己的下單規則；null = 沿用「設定」頁 */
+  size_mode: "fixed" | "percent" | null; size_value: number | null; leverage: number | null;
+  stop_loss_pct: number | null; take_profit_pct: number | null;
   last_bar_time: number | null; last_run_at: string | null; last_error: string | null; created_at: string;
   /** 最近一次啟用（或啟用中改了設定）的時間 */
   enabled_at: string | null;

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..engine.executor import Executor
-from ..engine.risk import load_bot_settings
+from ..engine.risk import ORDER_FIELDS, load_bot_settings
 from ..exchange.base import UnknownSymbol, normalize_ticker
 from ..engine import shadow
 from ..engine.performance import OwnerStats, RoundTrip, attribute, names_from_signals, owner_label
@@ -31,6 +31,12 @@ class StrategyBody(BaseModel):
     enabled: bool = False
     enter_on_enable: bool = False  # 啟用後第一次判斷就照目前判斷進場
     mode: Literal["live", "shadow"] = "live"  # shadow：影子模式，只記錄虛擬交易、不下單
+    # 這個策略自己的下單規則；None = 沿用「設定」頁（限制跟設定頁一樣）
+    size_mode: Literal["fixed", "percent"] | None = None
+    size_value: float | None = Field(None, gt=0)
+    leverage: int | None = Field(None, ge=1, le=125)
+    stop_loss_pct: float | None = Field(None, ge=0, lt=100)
+    take_profit_pct: float | None = Field(None, ge=0, le=1000)
 
 
 class BacktestBody(BaseModel):
@@ -99,9 +105,11 @@ async def _shadow_stats(s: AsyncSession, ex: Executor) -> dict[int, OwnerStats]:
     prices: dict[tuple[str, str], float | None] = {}
     for t in (await s.scalars(select(ShadowTrade).order_by(ShadowTrade.entry_time, ShadowTrade.id))).all():
         st = out.setdefault(t.strategy_id, OwnerStats())
-        trip = RoundTrip(t.symbol, t.market, t.side, t.entry_time.isoformat(), qty=t.qty, fees=t.entry_fee + t.exit_fee)
+        # 資金費算進已實現（跟回測的淨損益一致）
+        trip = RoundTrip(t.symbol, t.market, t.side, t.entry_time.isoformat(), qty=t.qty, fees=t.entry_fee + t.exit_fee,
+                         realized=-(t.funding or 0))
         if t.exit_time:
-            trip.closed_at, trip.realized = t.exit_time.isoformat(), t.pnl
+            trip.closed_at, trip.realized = t.exit_time.isoformat(), t.pnl - (t.funding or 0)
             st.trips.append(trip)
         else:
             key = (t.market, t.symbol)
@@ -176,7 +184,10 @@ async def update_config(
         raise HTTPException(404)
     await _validate(body, ex)
     await _check_one_per_symbol(s, body, config_id)
-    changed_logic = any(getattr(cfg, k) != v for k, v in body.model_dump(exclude={"name", "enabled"}).items())
+    # 只改名稱、開關或下單金額不算改了判斷邏輯，不必重新開始觀察
+    changed_logic = any(
+        getattr(cfg, k) != v for k, v in body.model_dump(exclude={"name", "enabled", *ORDER_FIELDS}).items()
+    )
     turned_on = body.enabled and not cfg.enabled
     for k, v in body.model_dump().items():
         setattr(cfg, k, v)

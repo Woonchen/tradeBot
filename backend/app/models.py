@@ -195,6 +195,12 @@ class StrategyConfig(Base):
     enter_on_enable: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     # live：真的下單；shadow：影子模式，只記錄虛擬交易（shadow_trades），不下單也不佔用部位
     mode: Mapped[str] = mapped_column(String(8), default="live", server_default="live")
+    # 這個策略自己的下單規則；None = 沿用「設定」頁（保證金模式、持倉上限、每日虧損上限一律用設定頁）
+    size_mode: Mapped[str | None] = mapped_column(String(8))  # fixed / percent
+    size_value: Mapped[float | None] = mapped_column(Float)
+    leverage: Mapped[int | None] = mapped_column(Integer)
+    stop_loss_pct: Mapped[float | None] = mapped_column(Float)
+    take_profit_pct: Mapped[float | None] = mapped_column(Float)
     # 執行狀態：最後一根處理過的 K 棒、當時策略的判斷
     last_target: Mapped[str | None] = mapped_column(String(5))
     last_bar_time: Mapped[int | None] = mapped_column(Integer)
@@ -231,6 +237,9 @@ class ShadowTrade(Base):
     exit_fee: Mapped[float] = mapped_column(Float, default=0)
     pnl: Mapped[float] = mapped_column(Float, default=0)
     exit_reason: Mapped[str | None] = mapped_column(String(12))  # signal / stop / take_profit
+    # 合約的資金費（正 = 付出、負 = 收到），規則跟回測一樣；funding_until = 已經結算到哪個時間（秒）
+    funding: Mapped[float] = mapped_column(Float, default=0, server_default="0")
+    funding_until: Mapped[int | None] = mapped_column(Integer)
 
 
 SHADOW_START_EQUITY = 10_000.0

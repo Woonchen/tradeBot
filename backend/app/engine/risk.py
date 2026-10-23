@@ -1,4 +1,5 @@
 from datetime import datetime, time, timezone
+from types import SimpleNamespace
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,3 +43,19 @@ async def check_open_risk(s: AsyncSession, cfg: BotSettings, closing_one: bool):
     count = await open_position_count(s) - (1 if closing_one else 0)
     if count >= cfg.max_open_positions:
         raise Reject(f"持倉數 {count} 已達上限 {cfg.max_open_positions}")
+
+
+ORDER_FIELDS = ("size_mode", "size_value", "leverage", "stop_loss_pct", "take_profit_pct")
+
+
+def order_rules(bot: BotSettings, strategy=None) -> SimpleNamespace:
+    """這筆下單用的規則：策略有自訂的欄位用策略的，沒填的沿用「設定」頁。
+
+    保證金模式是帳戶層級的設定，一律用設定頁；持倉上限、每日虧損上限也是（在 check_open_risk）。
+    """
+    vals = {f: getattr(bot, f) for f in ORDER_FIELDS}
+    for f in ORDER_FIELDS:
+        v = getattr(strategy, f, None) if strategy is not None else None
+        if v is not None:
+            vals[f] = v
+    return SimpleNamespace(**vals, margin_mode=bot.margin_mode)

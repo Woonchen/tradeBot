@@ -8,6 +8,8 @@ from app.api import strategies as api
 from app.api.deps import get_executor, require_user
 from app.db import get_session
 from app.engine.performance import attribute
+from sqlalchemy import select
+
 from app.models import Position, Signal, StrategyConfig, Trade
 
 from .test_executor import env  # noqa: F401  (pytest fixture)
@@ -222,3 +224,37 @@ async def test_positions_api_shows_net_and_owner(client, env):  # noqa: F811
     (p,) = TestClient(app).get("/api/positions?status=closed").json()
     assert p["owner"] == "BTC 日線 SMA50"  # 用策略 id 找目前的名稱
     assert p["fees"] == pytest.approx(1.0) and p["net"] == pytest.approx(3.0)
+
+
+async def test_strategy_order_rules_override_settings_page(client, env):  # noqa: F811
+    """策略自訂的下單金額、槓桿、停損用在實際下單；沒填的沿用設定頁。改金額不會重新開始觀察。"""
+    from app.engine.risk import order_rules
+    from app.models import BotSettings
+    from .test_executor import run
+
+    c, sf = client
+    ex, _, ad = env
+    body_ = {**body("custom"), "size_mode": "fixed", "size_value": 300, "leverage": 3, "stop_loss_pct": 4}
+    d = c.post("/api/strategies", json=body_).json()
+    assert (d["size_value"], d["leverage"], d["stop_loss_pct"], d["take_profit_pct"]) == (300, 3, 4, None)
+
+    async with sf() as s:
+        bot = await s.get(BotSettings, 1)
+        cfg = await s.get(StrategyConfig, d["id"])
+        r = order_rules(bot, cfg)
+        assert (r.size_mode, r.size_value, r.leverage, r.stop_loss_pct) == ("fixed", 300, 3, 4)
+        assert r.take_profit_pct == bot.take_profit_pct and r.margin_mode == bot.margin_mode  # 沒填的用設定頁
+        cfg.last_target = "long"
+        await s.commit()
+
+    # 實際下單：策略訊號用策略的金額與槓桿（價格 100、保證金 300 × 3 倍 = 9 顆），停損 4%
+    sig = await run(ex, source="strategy", strategy="custom", ticker="BTCUSDT", market="futures", action="long",
+                    target="long", raw={"strategy_id": d["id"]})
+    assert sig.status == "executed" and ad["futures"].orders[-1][1] == 9
+    async with sf() as s:
+        pos = (await s.scalars(select(Position).where(Position.closed_at.is_(None)))).one()
+        assert pos.leverage == 3 and pos.stop_price == pytest.approx(96)
+
+    # 只改金額：不重新開始觀察（判斷保留）
+    d2 = c.put(f"/api/strategies/{d['id']}", json={**body_, "size_value": 500}).json()
+    assert d2["size_value"] == 500 and d2["last_target"] == "long"
