@@ -306,6 +306,18 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["strategies"] }); onDone(); },
   });
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setD({ ...d, [k]: v });
+  // 改到既有策略的市場、交易對或週期時先確認：回測和儲存共用同一份表單，切去試回測後按儲存很容易誤改
+  const keyChanges = d.id ? ([
+    ["市場", initial.market, d.market], ["交易對", initial.symbol, d.symbol], ["K 線週期", initial.interval, d.interval],
+  ] as const).filter(([, a, b]) => a !== b) : [];
+  const trySave = (enabled: boolean) => {
+    if (keyChanges.length) {
+      const zh = (v: string) => (v === "futures" ? "合約" : v === "spot" ? "現貨" : v);
+      const lines = keyChanges.map(([label, a, b]) => `${label}：${zh(a)} → ${zh(b)}`).join("\n");
+      if (!confirm(`確定要修改策略「${initial.name}」的\n\n${lines}\n\n儲存後策略會重新開始觀察。如果只是想試回測，請按取消，回測不需要儲存。`)) return;
+    }
+    save.mutate(enabled);
+  };
   // 實際會用的下單規則：策略有設定的用策略的，沒填的用設定頁
   const eff = bot.data && {
     size_mode: d.size_mode ?? bot.data.size_mode, size_value: d.size_value ?? bot.data.size_value,
@@ -478,8 +490,8 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
         </span>
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={onDone}>取消</button>
-        <button className="btn" disabled={save.isPending} onClick={() => save.mutate(false)}>儲存（停用）</button>
-        <button className="btn primary" disabled={save.isPending} onClick={() => save.mutate(true)}>儲存並啟用</button>
+        <button className="btn" disabled={save.isPending} onClick={() => trySave(false)}>儲存（停用）</button>
+        <button className="btn primary" disabled={save.isPending} onClick={() => trySave(true)}>儲存並啟用</button>
       </div>
       {backtest.isError && <p className="error-text">{(backtest.error as Error).message}</p>}
       {save.isError && <p className="error-text">{(save.error as Error).message}</p>}

@@ -189,6 +189,7 @@ async def update_config(
         getattr(cfg, k) != v for k, v in body.model_dump(exclude={"name", "enabled", *ORDER_FIELDS}).items()
     )
     turned_on = body.enabled and not cfg.enabled
+    changes = describe_changes(cfg, body)
     for k, v in body.model_dump().items():
         setattr(cfg, k, v)
     cfg.symbol = cfg.symbol.upper()
@@ -201,8 +202,44 @@ async def update_config(
     await s.commit()
     _runner(request).reset(cfg.id)
     await ex.bus.emit("strategy", cfg.to_dict(), category="system",
-                      message=f"策略「{cfg.name}」已更新" + ("（啟用中）" if cfg.enabled else "（已停用）"))
+                      message=f"策略「{cfg.name}」已更新" + ("（啟用中）" if cfg.enabled else "（已停用）")
+                      + ("：" + "、".join(changes) if changes else "：沒有變更"))
     return cfg.to_dict()
+
+
+# 操作紀錄裡顯示的欄位名稱，順序就是紀錄的順序
+CHANGE_LABELS = {
+    "name": "名稱", "enabled": "開關", "mode": "模式", "strategy": "策略", "symbol": "交易對", "market": "市場",
+    "interval": "週期", "params": "參數", "enter_on_enable": "啟用時立即進場", "size_mode": "金額方式",
+    "size_value": "金額", "leverage": "槓桿", "stop_loss_pct": "停損", "take_profit_pct": "停利",
+}
+_WORDS = {
+    "market": {"spot": "現貨", "futures": "合約"}, "mode": {"live": "實際下單", "shadow": "影子模式"},
+    "size_mode": {"fixed": "固定金額", "percent": "可用資金 %"},
+    "enabled": {True: "啟用", False: "停用"}, "enter_on_enable": {True: "開", False: "關"},
+}
+
+
+def _show(field: str, v) -> str:
+    if v is None:
+        return "照設定頁"
+    if field in _WORDS:
+        return _WORDS[field].get(v, str(v))
+    if isinstance(v, float):
+        v = f"{v:g}"
+    return {"leverage": f"{v} 倍", "stop_loss_pct": f"{v}%", "take_profit_pct": f"{v}%"}.get(field, str(v))
+
+
+def describe_changes(cfg: StrategyConfig, body: StrategyBody) -> list[str]:
+    """這次修改了哪些欄位，例如「市場 現貨 → 合約」；參數太長，只寫「參數已修改」。"""
+    new = body.model_dump() | {"symbol": body.symbol.upper()}
+    out = []
+    for field, label in CHANGE_LABELS.items():
+        old, val = getattr(cfg, field), new[field]
+        if old == val:
+            continue
+        out.append(f"{label}已修改" if field == "params" else f"{label} {_show(field, old)} → {_show(field, val)}")
+    return out
 
 
 @router.delete("/{config_id}")

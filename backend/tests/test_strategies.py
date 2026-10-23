@@ -558,3 +558,20 @@ def test_plots_match_what_strategies_use():
     assert set(ps) == {"K9", "D9", "EMA200"}  # K 用了三次也只畫一條；價格不畫
     assert ps["EMA200"]["pane"] == "main" and ps["K9"]["group"] == ps["D9"]["group"] == "KD"
     assert ps["K9"]["levels"] == [30]
+
+
+def test_update_log_lists_changed_fields():
+    from app.api.strategies import StrategyBody, describe_changes
+    from app.models import StrategyConfig
+
+    base = dict(name="BTC 日線", strategy="ma_trend", symbol="BTCUSDT", market="spot", interval="1d",
+                params={"length": 50}, enabled=True, enter_on_enable=False, mode="live",
+                size_mode="percent", size_value=50.0, leverage=None, stop_loss_pct=0.0, take_profit_pct=None)
+    cfg = StrategyConfig(**base)
+    assert describe_changes(cfg, StrategyBody(**base)) == []
+    body = StrategyBody(**base | {"market": "futures", "leverage": 2, "params": {"length": 60}, "size_value": 550,
+                                  "size_mode": "fixed", "symbol": "btcusdt", "stop_loss_pct": 5})
+    assert describe_changes(cfg, body) == [
+        "市場 現貨 → 合約", "參數已修改", "金額方式 可用資金 % → 固定金額", "金額 50 → 550",
+        "槓桿 照設定頁 → 2 倍", "停損 0% → 5%",
+    ]
