@@ -219,11 +219,28 @@ def _sizing(body: "BacktestBody", bot) -> dict:
     }
 
 
+async def _attach(request: Request, strategies: list, symbol: str) -> None:
+    """規則用到恐懼貪婪、資金費率時，先把資料載入策略（同一份資料只抓一次）。"""
+    sentiment = getattr(request.app.state, "sentiment", None)
+    if sentiment is None:
+        return
+    # 只有條件組合器有 external_needs；其他內建策略不用外部資料
+    first = next((st for st in strategies if hasattr(st, "external_needs") and st.external_needs()), None)
+    if first is None:
+        return
+    await sentiment.attach(first, symbol)
+    for st in strategies:
+        st.ext = first.ext
+
+
 @router.post("/backtest")
-async def backtest(body: BacktestBody, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor)):
+async def backtest(
+    body: BacktestBody, request: Request, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor),
+):
     symbol = await _validate(body, ex)
     bot = await load_bot_settings(s)
     strat = build_strategy(body.strategy, body.params)
+    await _attach(request, [strat], body.symbol)
     n, warm = body.bars, strat.warmup  # 每段前面多抓 warm 根讓指標穩定，不計入結果
     candles = await fetch_candles(
         ex.adapters[body.market], symbol, body.interval, n * (2 if body.compare_earlier else 1) + warm,
@@ -275,7 +292,9 @@ def _brief(st: dict) -> dict:
 
 
 @router.post("/sweep")
-async def sweep(body: SweepBody, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor)):
+async def sweep(
+    body: SweepBody, request: Request, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor),
+):
     """參數穩健性：一個或兩個數字參數的每個組合，在最近與更早兩段期間各回測一次。
 
     好的參數應該落在一片「附近也都不錯」的區域；只有單一數值特別好、旁邊都差，多半是運氣。
@@ -312,6 +331,7 @@ async def sweep(body: SweepBody, s: AsyncSession = Depends(get_session), ex: Exe
     valid = [st for row in grid for st, _ in row if st]
     if not valid:
         raise HTTPException(422, "所有組合的參數都不合法")
+    await _attach(request, valid, body.symbol)
 
     if _sweep_lock.locked():
         raise HTTPException(429, "已經有一個參數掃描在跑，請等它完成")

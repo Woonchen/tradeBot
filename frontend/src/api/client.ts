@@ -129,6 +129,18 @@ export interface BacktestSizing {
   market: Market; size_mode: "fixed" | "percent"; size_value: number; leverage: number; start_equity: number;
   stop_loss_pct: number; take_profit_pct: number;
 }
+export interface MetricPoint { value: number; ts: number; prev: number | null; week_ago: number | null }
+export interface SentimentReport {
+  fear_greed: { value: number; classification: string; ts: number; prev: number | null; week_ago: number | null } | null;
+  symbols: {
+    symbol: string;
+    /** rate：最新一次（每 8 小時 %）；avg7_annualized：近 7 天平均換算年化 % */
+    funding: { rate: number; ts: number; avg7_annualized: number } | null;
+    long_short: MetricPoint | null; top_long_short: MetricPoint | null; open_interest: MetricPoint | null; taker_ratio: MetricPoint | null;
+  }[];
+  /** 系統自己記錄的合約數據累積了幾天 */
+  recorded_days: number;
+}
 export interface SweepStats {
   total_return: number; profit_factor: number | null; max_drawdown: number; trades: number; win_rate: number | null;
   buy_hold_return: number; from: number | null; to: number | null;

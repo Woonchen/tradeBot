@@ -4,6 +4,7 @@ import { api, type ActivityLog, type EquityPoint, type Position, type Summary } 
 import { useLivePrices } from "../api/liveSocket";
 import { ActivityTimeline } from "../components/ActivityTimeline";
 import { EquityChart } from "../components/EquityChart";
+import { SentimentCard } from "../components/SentimentCard";
 import { StrategyStatus } from "../components/StrategyStatus";
 import { fmtNum, fmtPct, fmtSigned, livePnl, pnlClass } from "../format";
 import { BotControls } from "./BotControls";
@@ -56,12 +57,15 @@ export function Dashboard() {
             <PositionsTable compact />
           </div>
         </div>
+        <div className="grid" style={{ alignContent: "start" }}>
+        <SentimentCard />
         <div className="card">
           <div className="toolbar" style={{ justifyContent: "space-between" }}>
             <h2 style={{ margin: 0 }}>最近事件</h2>
             <Link to="/activity">全部 →</Link>
           </div>
           <ActivityTimeline logs={logs.data ?? []} />
+        </div>
         </div>
       </div>
     </>

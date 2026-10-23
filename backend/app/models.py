@@ -234,3 +234,39 @@ class ShadowTrade(Base):
 
 
 SHADOW_START_EQUITY = 10_000.0
+
+
+# ---------------------------------------------------------------------------- 市場情緒
+class FearGreed(Base):
+    """Alternative.me 恐懼貪婪指數，每天一筆（ts = 當天 00:00 UTC，秒）。"""
+
+    __tablename__ = "fear_greed"
+
+    ts: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    value: Mapped[int] = mapped_column(Integer)
+    classification: Mapped[str] = mapped_column(String(24))
+
+
+class FundingRate(Base):
+    """Binance 永續合約資金費率（ts = 結算時間，秒；rate 是每 8 小時的比例，0.0001 = 0.01%）。"""
+
+    __tablename__ = "funding_rates"
+
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)  # BTCUSDT
+    ts: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    rate: Mapped[float] = mapped_column(Float)
+
+
+class MarketMetric(Base):
+    """Binance 只保留 30 天的合約數據，每天記一筆累積成自己的歷史。
+
+    metric：long_short（散戶帳戶多空比）、top_long_short（大戶持倉多空比）、
+    open_interest（未平倉量，USDT）、taker_ratio（主動買 ÷ 主動賣）。ts = 當天 00:00 UTC（秒）。
+    """
+
+    __tablename__ = "market_metrics"
+
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    metric: Mapped[str] = mapped_column(String(20), primary_key=True)
+    ts: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    value: Mapped[float] = mapped_column(Float)

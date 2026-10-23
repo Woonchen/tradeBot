@@ -10,6 +10,7 @@ from typing import Annotated, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .base import Candle, Param, Strategy, Target, register
+from .external import EXTERNAL_KINDS, align
 from .indicators import atr, crossover, crossunder, ema, kd, rsi, sma
 
 Source = Literal["open", "high", "low", "close", "volume"]
@@ -65,6 +66,12 @@ class Kd(_Op):
     length: int = Field(9, ge=2, le=200)
 
 
+class External(_Op):
+    """市場情緒：恐懼貪婪指數（0～100）或資金費率（每 8 小時 %，0.01 = 0.01%）。"""
+
+    kind: Literal["fear_greed", "funding_rate"]
+
+
 class Macd(_Op):
     kind: Literal["macd", "macd_signal", "macd_hist"]
     fast: int = Field(12, ge=1, le=200)
@@ -79,7 +86,7 @@ class Macd(_Op):
 
 
 Operand = Annotated[
-    Union[Value, Price, MovingAverage, Rsi, Atr, Channel, Bollinger, Macd, Kd], Field(discriminator="kind")
+    Union[Value, Price, MovingAverage, Rsi, Atr, Channel, Bollinger, Macd, Kd, External], Field(discriminator="kind")
 ]
 Comparator = Literal[">", "<", ">=", "<=", "crosses_above", "crosses_below"]
 
@@ -183,6 +190,9 @@ def compute(op: dict, candles: list[Candle], cache: dict) -> list[float | None]:
             sd = _rolling_std(closes, op["length"])
             sign = 1 if k == "bb_upper" else -1
             out = [None if m is None or s is None else m + sign * op["mult"] * s for m, s in zip(mid, sd)]
+    elif k in EXTERNAL_KINDS:
+        # 由策略執行／回測事先載入（strategy.ext）；沒有資料時整段都是 None，條件不成立
+        out = align(cache.get("__ext__", {}).get(k, []), candles)
     elif k in ("kd_k", "kd_d"):
         kk, dd = kd(col("high"), col("low"), col("close"), op["length"])
         out = kk if k == "kd_k" else dd
@@ -250,9 +260,18 @@ class RuleStrategy(Strategy):
         longest = max((_max_length(o) for o in ops), default=1)
         return max(300, min(1500, longest * 10))
 
+    def external_needs(self) -> set[str]:
+        """規則用到哪些 K 線以外的資料（恐懼貪婪、資金費率），呼叫端據此事先載入。"""
+        return {op["kind"] for op in self._operands() if op["kind"] in EXTERNAL_KINDS}
+
+    def _operands(self) -> list[dict]:
+        r = self.p["rules"]
+        return [c[side] for g in ("long_entry", "long_exit", "short_entry", "short_exit")
+                for c in r[g]["conditions"] for side in ("left", "right")]
+
     def targets(self, candles: list[Candle]) -> list[Target]:
         r = self.p["rules"]
-        cache: dict = {}
+        cache: dict = {"__ext__": getattr(self, "ext", {})}
         sl, tp = r["stop_loss_pct"], r["take_profit_pct"]
         out: list[Target] = []
         pos: Target = "flat"

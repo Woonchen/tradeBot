@@ -9,7 +9,8 @@ export type Operand =
   | { kind: "rsi" | "atr" | "highest" | "lowest"; length: number }
   | { kind: "bb_upper" | "bb_middle" | "bb_lower"; length: number; mult: number }
   | { kind: "macd" | "macd_signal" | "macd_hist"; fast: number; slow: number; signal: number }
-  | { kind: "kd_k" | "kd_d"; length: number };
+  | { kind: "kd_k" | "kd_d"; length: number }
+  | { kind: "fear_greed" | "funding_rate" };
 type Kind = Operand["kind"];
 type Cmp = ">" | "<" | ">=" | "<=" | "crosses_above" | "crosses_below";
 export interface Condition { left: Operand; cmp: Cmp; right: Operand }
@@ -34,6 +35,8 @@ const KINDS: { kind: Kind; label: string; group: string }[] = [
   { kind: "macd_hist", label: "MACD 柱狀圖", group: "動能" },
   { kind: "kd_k", label: "KD 的 K 值", group: "動能" },
   { kind: "kd_d", label: "KD 的 D 值", group: "動能" },
+  { kind: "fear_greed", label: "恐懼貪婪指數（0–100）", group: "情緒" },
+  { kind: "funding_rate", label: "資金費率（%／8 小時）", group: "情緒" },
   { kind: "bb_upper", label: "布林上軌", group: "波動" },
   { kind: "bb_middle", label: "布林中軌", group: "波動" },
   { kind: "bb_lower", label: "布林下軌", group: "波動" },
@@ -59,6 +62,7 @@ function defaultOperand(kind: Kind): Operand {
     case "highest": case "lowest": return { kind, length: 20 };
     case "bb_upper": case "bb_middle": case "bb_lower": return { kind, length: 20, mult: 2 };
     case "kd_k": case "kd_d": return { kind, length: 9 };
+    case "fear_greed": case "funding_rate": return { kind };
     default: return { kind, fast: 12, slow: 26, signal: 9 };
   }
 }
@@ -74,6 +78,8 @@ export function describeOperand(o: Operand): string {
     case "highest": case "lowest": return `前 ${o.length} 根${o.kind === "highest" ? "最高" : "最低"}價`;
     case "bb_upper": case "bb_middle": case "bb_lower": return `${label}(${o.length}, ${o.mult})`;
     case "kd_k": case "kd_d": return `${o.kind === "kd_k" ? "K" : "D"}(${o.length})`;
+    case "fear_greed": return "恐懼貪婪指數";
+    case "funding_rate": return "資金費率(%)";
     default: return `${label}(${o.fast}, ${o.slow}, ${o.signal})`;
   }
 }
@@ -135,6 +141,15 @@ export const TEMPLATES: { name: string; description: string; rules: Rules }[] = 
     },
   },
   {
+    name: "極度恐懼時逆向買進（日線）",
+    description: "恐懼貪婪指數低於 20（極度恐懼）買進、高於 60 賣出。指數每天更新一次，建議搭配 1d 週期；先回測兩段期間再使用",
+    rules: {
+      long_entry: g("and", cond({ kind: "fear_greed" }, "<", val(20))),
+      long_exit: g("or", cond({ kind: "fear_greed" }, ">", val(60))),
+      short_entry: empty(), short_exit: empty(), stop_loss_pct: 0, take_profit_pct: 0,
+    },
+  },
+  {
     name: "MACD 動能",
     description: "MACD 柱狀圖由負轉正做多，由正轉負出場",
     rules: {
@@ -161,7 +176,7 @@ function OperandEditor({ value, onChange }: { value: Operand; onChange: (o: Oper
   return (
     <span className="rb-operand">
       <select value={value.kind} onChange={(e) => onChange(defaultOperand(e.target.value as Kind))}>
-        {["價格", "趨勢", "動能", "波動"].map((grp) => (
+        {["價格", "趨勢", "動能", "波動", "情緒"].map((grp) => (
           <optgroup key={grp} label={grp}>
             {KINDS.filter((k) => k.group === grp).map((k) => <option key={k.kind} value={k.kind}>{k.label}</option>)}
           </optgroup>

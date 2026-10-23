@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .api import auth, bot, history, market, portfolio, strategies, webhook, ws
+from .api import auth, bot, history, market, portfolio, sentiment, strategies, webhook, ws
 from .api.totp import decode_secret
 from . import migrate
 from .config import settings
@@ -14,8 +14,9 @@ from .engine.risk import load_bot_settings
 from .exchange.factory import build_adapters
 from .services.event_bus import EventBus
 from .services.market_stream import MarketHub
+from .services.sentiment import Sentiment, tracked_tickers
 from .workers.strategy_runner import StrategyRunner
-from .workers.sync import SyncWorkers
+from .workers.sync import SyncWorkers, every
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -47,7 +48,9 @@ async def lifespan(app: FastAPI):
     adapters = build_adapters(settings, SessionLocal)
     executor = Executor(adapters, bus, SessionLocal)
     hub = MarketHub(executor, settings)
-    runner = StrategyRunner(executor)
+    sentiment = Sentiment(SessionLocal)
+    runner = StrategyRunner(executor, sentiment)
+    app.state.sentiment = sentiment
     app.state.executor = executor
     app.state.hub = hub
     app.state.strategy_runner = runner
@@ -60,6 +63,8 @@ async def lifespan(app: FastAPI):
         *hub.start(),
         *SyncWorkers(executor, hub).start(settings),
         asyncio.create_task(runner.run()),
+        # 市場情緒：每小時更新恐懼貪婪、資金費率，並記錄 Binance 只保留 30 天的合約數據
+        asyncio.create_task(every(3600, lambda: _refresh_sentiment(sentiment), "sentiment")),
     ]
     try:
         yield
@@ -68,14 +73,19 @@ async def lifespan(app: FastAPI):
             t.cancel()
         for a in adapters.values():
             await a.close()
+        await sentiment.close()
         await engine.dispose()
 
 
 # 不開 CORS：正式環境前後端同網域（Caddy），開發時由 Vite 的 proxy 轉發，都不是跨網域請求
+async def _refresh_sentiment(sentiment: Sentiment):
+    await sentiment.refresh_all(await tracked_tickers(SessionLocal))
+
+
 app = FastAPI(title="TradeBot", lifespan=lifespan)
 for r in (
     auth.router, webhook.router, market.router, history.router, portfolio.router, bot.router,
-    strategies.router, ws.router,
+    strategies.router, sentiment.router, ws.router,
 ):
     app.include_router(r)
 

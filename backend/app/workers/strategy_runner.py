@@ -23,8 +23,9 @@ RETRY_AFTER_ERROR = 30
 
 
 class StrategyRunner:
-    def __init__(self, executor: Executor):
+    def __init__(self, executor: Executor, sentiment=None):
         self.ex = executor
+        self.sentiment = sentiment  # 規則用到恐懼貪婪、資金費率時，由它載入資料
         self.bus = executor.bus
         self._next_check: dict[int, float] = {}
 
@@ -60,6 +61,8 @@ class StrategyRunner:
                 adapter = self.ex.adapters[cfg.market]
                 symbol = await adapter.resolve_symbol(cfg.symbol)
                 candles = await fetch_candles(adapter, symbol, cfg.interval, strat.warmup)
+                if self.sentiment:
+                    await self.sentiment.attach(strat, cfg.symbol)
                 if len(candles) < 2:
                     raise RuntimeError("K 線資料不足")
                 bar = candles[-1]
