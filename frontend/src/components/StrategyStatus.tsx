@@ -36,7 +36,7 @@ export function StrategyStatus() {
               const next = nextEval(c);
               return (
                 <tr key={c.id}>
-                  <td>{c.name}<div className="muted" style={{ fontSize: 12 }}>{c.symbol} {c.market === "futures" ? "合約" : "現貨"} · {c.interval}</div></td>
+                  <td>{c.name}{c.mode === "shadow" && <span className="badge" style={{ marginLeft: 6 }}>影子</span>}<div className="muted" style={{ fontSize: 12 }}>{c.symbol} {c.market === "futures" ? "合約" : "現貨"} · {c.interval}</div></td>
                   <td>
                     {c.last_target ? <span className={`badge ${cls}`}>{label}</span> : <span className="muted">—</span>}
                     {waiting && <div className="muted" style={{ fontSize: 12 }}>等判斷改變才進場</div>}

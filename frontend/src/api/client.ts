@@ -101,6 +101,8 @@ export interface StrategyInfo { key: string; label: string; description: string;
 export interface StrategyConfig {
   id: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
   params: Record<string, any>; enabled: boolean; enter_on_enable: boolean; last_target: string | null;
+  /** live：真的下單；shadow：影子模式，只記錄虛擬交易 */
+  mode: "live" | "shadow";
   last_bar_time: number | null; last_run_at: string | null; last_error: string | null; created_at: string;
   /** 最近一次啟用（或啟用中改了設定）的時間 */
   enabled_at: string | null;
@@ -126,6 +128,19 @@ export interface BacktestStats {
 export interface BacktestSizing {
   market: Market; size_mode: "fixed" | "percent"; size_value: number; leverage: number; start_equity: number;
   stop_loss_pct: number; take_profit_pct: number;
+}
+export interface SweepStats {
+  total_return: number; profit_factor: number | null; max_drawdown: number; trades: number; win_rate: number | null;
+  buy_hold_return: number; from: number | null; to: number | null;
+}
+/** 參數掃描的一格：參數衝突時只有 error；沒有更早期間時 earlier 是 null */
+export interface SweepCell { recent?: SweepStats; earlier?: SweepStats | null; error?: string }
+export interface SweepAxis { param: string; label: string; values: number[] }
+export interface SweepResult {
+  symbol: string; x: SweepAxis; y: SweepAxis | null;
+  /** cells[列 = y][欄 = x] */
+  cells: SweepCell[][];
+  sizing: BacktestSizing; bars: number; earlier_available: boolean;
 }
 export interface BacktestResult {
   symbol: string; params: Record<string, any>; candles: (Candle & { volume: number })[];

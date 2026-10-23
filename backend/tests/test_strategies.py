@@ -432,3 +432,50 @@ def test_backtest_follow_initial_enters_at_start():
     followed = run_backtest(Flip(seq), c, market="futures", size_value=100, fee_rate=0.0, warmup=2, follow_initial=True)
     assert waited.trades == []  # 起點已經是 long：等判斷改變，這段期間都沒變
     assert [(t["entry_time"], t["exit_time"]) for t in followed.trades] == [(3, 5)]  # 起點就照判斷進場
+
+
+def test_ma_trend_long_above_average_only():
+    closes = [100.0] * 10 + [110.0] * 5 + [90.0] * 5 + [100.0]
+    t = build_strategy("ma_trend", {"length": 5}).targets(candles_from(closes))
+    assert t[9] == "flat"            # 一直等於均線：不進場
+    assert t[10] == "long"           # 收盤價站上均線
+    assert t[15] == "flat"           # 跌破均線出場（不允許做空）
+    assert build_strategy("ma_trend", {"length": 5, "allow_short": True}).targets(candles_from(closes))[15] == "short"
+
+
+async def test_sweep_api_grid(env, monkeypatch):  # noqa: F811
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api import strategies as api
+    from app.api.deps import get_executor, require_user
+    from app.db import get_session
+
+    ex, sf, ad = env
+
+    async def fake_fetch(adapter, symbol, interval, bars):
+        return candles_from([100 + 10 * math.sin(i / 15) for i in range(bars)], step=900)
+
+    monkeypatch.setattr(api, "fetch_candles", fake_fetch)
+
+    async def session():
+        async with sf() as s:
+            yield s
+
+    app = FastAPI()
+    app.include_router(api.router)
+    app.dependency_overrides.update({require_user: lambda: "admin", get_executor: lambda: ex, get_session: session})
+    c = TestClient(app)
+    req = {"strategy": "ema_cross", "symbol": "BTCUSDT", "market": "futures", "interval": "15m", "bars": 400,
+           "params": {"atr_mult": 0}, "x": {"param": "fast", "values": [5, 10, 20]}, "y": {"param": "slow", "values": [10, 30]}}
+    d = c.post("/api/strategies/sweep", json=req).json()
+    assert d["x"]["values"] == [5, 10, 20] and d["y"]["values"] == [10, 30]
+    assert len(d["cells"]) == 2 and len(d["cells"][0]) == 3  # 列 = y、欄 = x
+    assert "error" in d["cells"][0][1] and "error" in d["cells"][0][2]  # 快線 ≥ 慢線：不合法
+    ok = d["cells"][1][0]
+    assert ok["recent"]["trades"] > 0 and ok["earlier"] is not None and ok["earlier"]["to"] < ok["recent"]["from"]
+
+    assert c.post("/api/strategies/sweep", json={**req, "y": {"param": "fast", "values": [1]}}).status_code == 422
+    assert c.post("/api/strategies/sweep", json={**req, "x": {"param": "allow_short", "values": [1]}}).status_code == 422
+    big = {**req, "x": {"param": "fast", "values": list(range(2, 22))}, "y": {"param": "slow", "values": list(range(30, 36))}}
+    assert c.post("/api/strategies/sweep", json=big).status_code == 422  # 20 × 6 = 120 > 100

@@ -65,6 +65,7 @@ class RoundTrip:
     qty: float = 0.0
     realized: float = 0.0
     fees: float = 0.0
+    unrealized: float | None = None  # 影子模式的未平倉虛擬交易用；實際部位的未實現損益由 API 從部位表補上
 
     @property
     def net(self) -> float:
@@ -90,7 +91,7 @@ class OwnerStats:
             "first_trade": self.trips[0].opened_at if self.trips else (self.open[0].opened_at if self.open else None),
             "last_trade": self.trips[-1].closed_at if self.trips else None,
             "open": [{"symbol": t.symbol, "market": t.market, "side": t.side, "qty": t.qty, "opened_at": t.opened_at,
-                      "realized": t.realized, "fees": t.fees} for t in self.open],
+                      "realized": t.realized, "fees": t.fees, "unrealized": t.unrealized} for t in self.open],
         }
 
 

@@ -6,13 +6,16 @@ import time
 
 from sqlalchemy import select
 
+from ..engine import shadow
 from ..engine.executor import Executor, get_open_position
+from ..engine.risk import load_bot_settings
 from ..exchange.base import UnknownSymbol
-from ..models import StrategyConfig, utcnow
+from ..models import ShadowTrade, StrategyConfig, utcnow
 from ..strategies import INTERVAL_SECONDS, build_strategy, for_market
 from ..strategies.history import fetch_candles
 
 log = logging.getLogger(__name__)
+SIDE_ZH = {"long": "多", "short": "空"}
 
 CHECK_EVERY = 5  # 秒
 CLOSE_DELAY = 3  # K 棒收盤後等幾秒再抓，讓交易所資料就緒
@@ -87,6 +90,10 @@ class StrategyRunner:
                 self._next_check[config_id] = time.time() + RETRY_AFTER_ERROR
                 return
 
+        if cfg.mode == "shadow":
+            await self._shadow(cfg, symbol, candles, target, prev, sec)
+            return
+
         if prev is None:
             # 啟用後第一次判斷：預設只記下來；設定了 enter_on_enable 就照目前判斷進場
             # （判斷是空手時不動作，不去平掉不是這個策略開的部位）
@@ -122,3 +129,43 @@ class StrategyRunner:
                      "bar_time": bar.time, "from": prev, "to": target, "params": cfg.params},
                 dedupe_key=f"strategy:{cfg.id}:{bar.time}:{target}",
             )
+
+    async def _shadow(self, cfg: StrategyConfig, symbol: str, candles, target: str, prev: str | None, sec: int):
+        """影子模式：判斷流程跟實際下單一樣，只是把交易記成虛擬交易（見 engine/shadow.py）。"""
+        bar = candles[-1]
+        first = prev is None
+        # 跟實際下單一樣：啟用後第一次只記下判斷（除非設定了立即進場），之後判斷改變才動作
+        act = (cfg.enter_on_enable and target != "flat") if first else target != prev
+        done: list[str] = []
+        async with self.ex.sf() as s:
+            bot = await load_bot_settings(s)
+            t = await s.scalar(select(ShadowTrade).where(
+                ShadowTrade.strategy_id == cfg.id, ShadowTrade.exit_time.is_(None),
+            ))
+            if t and (hit := shadow.protection_exit(t, candles, sec)):
+                price, when, reason = hit
+                shadow.close(t, price, when, reason)
+                done.append(f"{'停損' if reason == 'stop' else '停利'}出場 @ {price:g}，淨損益 {shadow.net(t):+.2f} USDT")
+                t = None
+            if act:
+                if t and t.side != target:
+                    shadow.close(t, bar.close, bar.time + sec, "signal")
+                    done.append(f"平{SIDE_ZH[t.side]} @ {bar.close:g}，淨損益 {shadow.net(t):+.2f} USDT")
+                    t = None
+                if target != "flat" and t is None:
+                    new = await shadow.open_trade(s, cfg, bot, symbol, target, bar, sec)
+                    if new:
+                        done.append(f"開{SIDE_ZH[target]} {new.qty:.6g} @ {bar.close:g}")
+            await s.commit()
+
+        head = f"影子策略「{cfg.name}」"
+        if first:
+            await self.bus.emit(
+                "strategy", cfg.to_dict(), category="signal",
+                message=f"{head}開始運作（只記錄、不下單），目前判斷：{target}。"
+                + ("依設定立即記錄進場" if act else "等判斷改變時才記錄進場"),
+            )
+        else:
+            await self.bus.emit("strategy", cfg.to_dict())
+        for m in done:
+            await self.bus.emit("strategy", cfg.to_dict(), category="signal", message=f"{head}（虛擬）{m}")

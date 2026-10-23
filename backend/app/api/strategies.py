@@ -1,16 +1,18 @@
+import asyncio
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..engine.executor import Executor
 from ..engine.risk import load_bot_settings
 from ..exchange.base import UnknownSymbol, normalize_ticker
-from ..engine.performance import OwnerStats, attribute, names_from_signals, owner_label
-from ..models import Position, Signal, StrategyConfig, Trade, utcnow
+from ..engine import shadow
+from ..engine.performance import OwnerStats, RoundTrip, attribute, names_from_signals, owner_label
+from ..models import Position, ShadowTrade, Signal, StrategyConfig, Trade, utcnow
 from ..strategies import INTERVAL_SECONDS, REGISTRY, build_strategy
 from ..strategies.backtest import run_backtest
 from ..strategies.history import fetch_candles
@@ -28,6 +30,7 @@ class StrategyBody(BaseModel):
     params: dict = {}
     enabled: bool = False
     enter_on_enable: bool = False  # 啟用後第一次判斷就照目前判斷進場
+    mode: Literal["live", "shadow"] = "live"  # shadow：影子模式，只記錄虛擬交易、不下單
 
 
 class BacktestBody(BaseModel):
@@ -66,10 +69,12 @@ async def _check_one_per_symbol(s: AsyncSession, body: StrategyBody, config_id: 
 
     機器人每個交易對只有一個部位，兩個策略會共用它、互相平倉，回測和實際結果都會失真。
     """
-    if not body.enabled:
+    if not body.enabled or body.mode != "live":  # 影子模式不下單，不會搶部位
         return
     want = normalize_ticker(body.symbol)
-    q = select(StrategyConfig).where(StrategyConfig.enabled.is_(True), StrategyConfig.market == body.market)
+    q = select(StrategyConfig).where(
+        StrategyConfig.enabled.is_(True), StrategyConfig.market == body.market, StrategyConfig.mode == "live",
+    )
     for other in (await s.scalars(q)).all():
         if other.id != config_id and normalize_ticker(other.symbol) == want:
             raise HTTPException(
@@ -88,8 +93,31 @@ async def catalog():
     return [cls.describe() for cls in REGISTRY.values()]
 
 
+async def _shadow_stats(s: AsyncSession, ex: Executor) -> dict[int, OwnerStats]:
+    """影子策略的虛擬交易績效；還沒平倉的用目前價格算未實現損益。"""
+    out: dict[int, OwnerStats] = {}
+    prices: dict[tuple[str, str], float | None] = {}
+    for t in (await s.scalars(select(ShadowTrade).order_by(ShadowTrade.entry_time, ShadowTrade.id))).all():
+        st = out.setdefault(t.strategy_id, OwnerStats())
+        trip = RoundTrip(t.symbol, t.market, t.side, t.entry_time.isoformat(), qty=t.qty, fees=t.entry_fee + t.exit_fee)
+        if t.exit_time:
+            trip.closed_at, trip.realized = t.exit_time.isoformat(), t.pnl
+            st.trips.append(trip)
+        else:
+            key = (t.market, t.symbol)
+            if key not in prices:
+                try:
+                    prices[key] = await ex.adapters[t.market].fetch_price(t.symbol)
+                except Exception:  # 拿不到價格就不顯示未實現損益
+                    prices[key] = None
+            price = prices[key]
+            trip.unrealized = None if price is None else (price - t.entry_price) * t.qty * (1 if t.side == "long" else -1)
+            st.open.append(trip)
+    return out
+
+
 @router.get("/performance")
-async def performance(s: AsyncSession = Depends(get_session)):
+async def performance(s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor)):
     """每個策略的實際成交績效（部位由誰開倉就算誰的，見 engine/performance.py）。"""
     trades = (await s.scalars(select(Trade).order_by(Trade.executed_at, Trade.id))).all()
     sig_ids = {t.signal_id for t in trades if t.signal_id}
@@ -106,8 +134,12 @@ async def performance(s: AsyncSession = Depends(get_session)):
             o["unrealized"] = unrealized.get((o["symbol"], o["market"]))
         return out
 
+    shadows = await _shadow_stats(s, ex)
     configs = (await s.scalars(select(StrategyConfig).order_by(StrategyConfig.id))).all()
-    result = [{"config": c.to_dict(), **summary(("strategy", c.id))} for c in configs]
+    result = [
+        {"config": c.to_dict(), **(shadows.get(c.id, OwnerStats()).summary() if c.mode == "shadow" else summary(("strategy", c.id)))}
+        for c in configs
+    ]
     old_names = names_from_signals(signals)
     others = [{"label": owner_label(owner, {}, old_names), **summary(owner)} for owner in sorted(stats, key=str)]
     return {"strategies": result, "others": others}
@@ -167,10 +199,24 @@ async def delete_config(config_id: int, s: AsyncSession = Depends(get_session), 
     cfg = await s.get(StrategyConfig, config_id)
     if not cfg:
         raise HTTPException(404)
+    await s.execute(delete(ShadowTrade).where(ShadowTrade.strategy_id == config_id))
     await s.delete(cfg)
     await s.commit()
     await ex.bus.emit("strategy", None, category="system", message=f"刪除策略「{cfg.name}」（既有持倉不會自動平倉）")
     return {"ok": True}
+
+
+def _sizing(body: "BacktestBody", bot) -> dict:
+    """回測的下單規則：沒填的用「設定」頁（實際下單也是用這些）。"""
+    return {
+        "market": body.market,
+        "size_mode": body.size_mode or bot.size_mode,
+        "size_value": body.size_value or bot.size_value,
+        "leverage": body.leverage or bot.leverage,
+        "start_equity": body.start_equity,
+        "stop_loss_pct": bot.stop_loss_pct if body.stop_loss_pct is None else body.stop_loss_pct,
+        "take_profit_pct": bot.take_profit_pct if body.take_profit_pct is None else body.take_profit_pct,
+    }
 
 
 @router.post("/backtest")
@@ -186,15 +232,7 @@ async def backtest(body: BacktestBody, s: AsyncSession = Depends(get_session), e
     recent_warm = max(0, len(recent) - n)  # 上市不久的幣，歷史不夠就少暖一點
     if len(recent) - recent_warm < 50:
         raise HTTPException(422, "歷史 K 線不足")
-    sizing = {
-        "market": body.market,
-        "size_mode": body.size_mode or bot.size_mode,
-        "size_value": body.size_value or bot.size_value,
-        "leverage": body.leverage or bot.leverage,
-        "start_equity": body.start_equity,
-        "stop_loss_pct": bot.stop_loss_pct if body.stop_loss_pct is None else body.stop_loss_pct,
-        "take_profit_pct": bot.take_profit_pct if body.take_profit_pct is None else body.take_profit_pct,
-    }
+    sizing = _sizing(body, bot)
     follow = {"follow_initial": body.enter_on_enable}
     res = run_backtest(strat, recent, warmup=recent_warm, **sizing, **follow)
     earlier = None
@@ -211,4 +249,106 @@ async def backtest(body: BacktestBody, s: AsyncSession = Depends(get_session), e
         "stats": res.stats,
         # 要求了但歷史不夠時是 None，前端會說明
         "earlier": earlier,
+    }
+
+
+# ---------------------------------------------------------------------------- 參數掃描
+MAX_SWEEP_CELLS = 100
+_sweep_lock = asyncio.Lock()  # 一次只跑一個掃描，避免同時吃滿 CPU
+
+
+class SweepAxis(BaseModel):
+    param: str
+    values: list[float] = Field(min_length=1, max_length=25)
+
+
+class SweepBody(BacktestBody):
+    bars: int = Field(5000, ge=50, le=20000)
+    compare_earlier: bool = True
+    x: SweepAxis
+    y: SweepAxis | None = None
+
+
+def _brief(st: dict) -> dict:
+    keys = ("total_return", "profit_factor", "max_drawdown", "trades", "win_rate", "buy_hold_return", "from", "to")
+    return {k: st[k] for k in keys}
+
+
+@router.post("/sweep")
+async def sweep(body: SweepBody, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor)):
+    """參數穩健性：一個或兩個數字參數的每個組合，在最近與更早兩段期間各回測一次。
+
+    好的參數應該落在一片「附近也都不錯」的區域；只有單一數值特別好、旁邊都差，多半是運氣。
+    """
+    symbol = await _validate(body, ex)
+    specs = {p.name: p for p in REGISTRY[body.strategy].params}
+    axes = [a for a in (body.x, body.y) if a]
+    for a in axes:
+        spec = specs.get(a.param)
+        if spec is None or spec.type not in ("int", "float"):
+            raise HTTPException(422, f"「{a.param}」不是可以掃描的數字參數")
+    if body.y and body.y.param == body.x.param:
+        raise HTTPException(422, "兩個軸不能是同一個參數")
+    ys = body.y.values if body.y else [None]
+    if len(body.x.values) * len(ys) > MAX_SWEEP_CELLS:
+        raise HTTPException(422, f"組合太多（最多 {MAX_SWEEP_CELLS} 個），請縮小範圍或加大間距")
+
+    def cast(name: str, v: float):
+        return int(round(v)) if specs[name].type == "int" else v
+
+    # 先建出每一格的策略；參數彼此衝突（例如快線 ≥ 慢線）的格子標成錯誤
+    grid: list[list[tuple]] = []
+    for yv in ys:
+        row = []
+        for xv in body.x.values:
+            params = {**body.params, body.x.param: cast(body.x.param, xv)}
+            if body.y:
+                params[body.y.param] = cast(body.y.param, yv)
+            try:
+                row.append((build_strategy(body.strategy, params), None))
+            except ValueError as e:
+                row.append((None, str(e)))
+        grid.append(row)
+    valid = [st for row in grid for st, _ in row if st]
+    if not valid:
+        raise HTTPException(422, "所有組合的參數都不合法")
+
+    if _sweep_lock.locked():
+        raise HTTPException(429, "已經有一個參數掃描在跑，請等它完成")
+    async with _sweep_lock:
+        bot = await load_bot_settings(s)
+        sizing, follow = _sizing(body, bot), {"follow_initial": body.enter_on_enable}
+        n, warm = body.bars, max(st.warmup for st in valid)
+        candles = await fetch_candles(ex.adapters[body.market], symbol, body.interval, n * (2 if body.compare_earlier else 1) + warm)
+        recent = candles[-(n + warm):]
+        recent_warm = max(0, len(recent) - n)
+        if len(recent) - recent_warm < 50:
+            raise HTTPException(422, "歷史 K 線不足")
+        earlier = candles[-(2 * n + warm):-n] if body.compare_earlier and len(candles) >= 2 * n + warm else None
+
+        def run_all():  # 在另一個執行緒跑，回測期間即時行情與策略執行不會卡住
+            out = []
+            for row in grid:
+                cells = []
+                for st, err in row:
+                    if st is None:
+                        cells.append({"error": err})
+                        continue
+                    r = run_backtest(st, recent, warmup=recent_warm, **sizing, **follow).stats
+                    e = run_backtest(st, earlier, warmup=warm, **sizing, **follow).stats if earlier else None
+                    cells.append({"recent": _brief(r), "earlier": _brief(e) if e else None})
+                out.append(cells)
+            return out
+
+        cells = await asyncio.to_thread(run_all)
+    return {
+        "symbol": symbol,
+        "x": {"param": body.x.param, "label": specs[body.x.param].label, "values": [cast(body.x.param, v) for v in body.x.values]},
+        "y": ({"param": body.y.param, "label": specs[body.y.param].label, "values": [cast(body.y.param, v) for v in body.y.values]}
+              if body.y else None),
+        "cells": cells,
+        "sizing": sizing,
+        "bars": n,
+        # 要求了但歷史不夠時，每格的 earlier 都是 None
+        "earlier_available": earlier is not None,
     }

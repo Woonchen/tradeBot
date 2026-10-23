@@ -193,6 +193,8 @@ class StrategyConfig(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # 啟用後第一次判斷就照目前判斷進場；預設 False：只記下判斷，等判斷改變才下單
     enter_on_enable: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # live：真的下單；shadow：影子模式，只記錄虛擬交易（shadow_trades），不下單也不佔用部位
+    mode: Mapped[str] = mapped_column(String(8), default="live", server_default="live")
     # 執行狀態：最後一根處理過的 K 棒、當時策略的判斷
     last_target: Mapped[str | None] = mapped_column(String(5))
     last_bar_time: Mapped[int | None] = mapped_column(Integer)
@@ -201,3 +203,34 @@ class StrategyConfig(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # 最近一次啟用的時間（停用後保留），「實際績效」用它決定回測同期間要從哪裡算起
     enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ShadowTrade(Base):
+    """影子模式的虛擬交易：策略照常判斷，但只記錄「如果下單會怎樣」，不送單。
+
+    以 K 棒收盤價成交、手續費用 taker 費率估算，下單金額照「設定」頁規則套在每個策略自己的
+    虛擬帳戶上（起始 SHADOW_START_EQUITY）。exit_time 為空代表仍持倉。
+    """
+
+    __tablename__ = "shadow_trades"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    strategy_id: Mapped[int] = mapped_column(ForeignKey("strategy_configs.id", name="fk_shadow_trades_strategy_id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(40))
+    market: Mapped[str] = mapped_column(String(10))
+    side: Mapped[str] = mapped_column(String(5))  # long / short
+    qty: Mapped[float] = mapped_column(Float)
+    entry_price: Mapped[float] = mapped_column(Float)
+    entry_bar: Mapped[int] = mapped_column(Integer)  # 產生進場判斷的那根 K 棒（開盤時間，秒）；之後的 K 棒才檢查停損停利
+    entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    entry_fee: Mapped[float] = mapped_column(Float, default=0)
+    stop_price: Mapped[float | None] = mapped_column(Float)
+    take_profit_price: Mapped[float | None] = mapped_column(Float)
+    exit_price: Mapped[float | None] = mapped_column(Float)
+    exit_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    exit_fee: Mapped[float] = mapped_column(Float, default=0)
+    pnl: Mapped[float] = mapped_column(Float, default=0)
+    exit_reason: Mapped[str | None] = mapped_column(String(12))  # signal / stop / take_profit
+
+
+SHADOW_START_EQUITY = 10_000.0

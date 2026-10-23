@@ -2,11 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   api, type BacktestResult, type BacktestStats, type BotSettings, type LivePerf, type Market, type ParamSpec, type PerformanceReport,
-  type StrategyConfig, type StrategyInfo,
+  type StrategyConfig, type StrategyInfo, type SweepResult,
 } from "../api/client";
 import { BacktestChart } from "../components/BacktestChart";
 import { RuleBuilder, rulesForMarket, type Rules } from "../components/RuleBuilder";
 import { EquityChart } from "../components/EquityChart";
+import { METRICS, SweepHeatmap, type Metric } from "../components/SweepHeatmap";
 import { fmtNum, fmtPct, fmtPrice, fmtSigned, fmtTime, INTERVAL_SEC, pnlClass } from "../format";
 
 const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
@@ -28,7 +29,7 @@ const TARGET_ZH: Record<string, string> = { long: "▲ 多", short: "▼ 空", f
 
 type Draft = {
   id?: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
-  params: Record<string, any>; enabled: boolean; enter_on_enable: boolean;
+  params: Record<string, any>; enabled: boolean; enter_on_enable: boolean; mode: "live" | "shadow";
 };
 
 const autoName = (symbol: string, label: string, interval: string) => `${symbol.replace(/USDT$/, "")} ${label.split(/[（ ]/)[0]} ${interval}`;
@@ -154,6 +155,113 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
   );
 }
 
+type AxisDraft = { param: string; from: number; to: number; step: number };
+const MAX_CELLS = 100;
+
+/** 從參數規格推一個預設範圍：預設值的一半到兩倍、大約 8 個值。 */
+function defaultAxis(spec: ParamSpec): AxisDraft {
+  const def = Number(spec.default);
+  const lo = Math.max(spec.min ?? -Infinity, spec.type === "int" ? Math.round(def / 2) : def / 2);
+  const hi = Math.min(spec.max ?? Infinity, def * 2);
+  const raw = (hi - lo) / 7;
+  const step = spec.type === "int" ? Math.max(1, Math.round(raw)) : Math.max(0.1, Number(raw.toFixed(1)));
+  return { param: spec.name, from: lo, to: hi, step };
+}
+
+function axisValues(a: AxisDraft, spec: ParamSpec | undefined): number[] {
+  if (!spec || !(a.step > 0) || a.to < a.from) return [];
+  const out: number[] = [];
+  for (let v = a.from; v <= a.to + 1e-9 && out.length <= 25; v += a.step) {
+    out.push(spec.type === "int" ? Math.round(v) : Number(v.toFixed(4)));
+  }
+  return [...new Set(out)];
+}
+
+/** 參數穩健性掃描：一個或兩個數字參數的每個組合，在最近與更早兩段期間各回測一次，畫成熱圖。 */
+function SweepPanel({ info, d, bars, sizing }: { info: StrategyInfo; d: Draft; bars: number; sizing: Sizing | null }) {
+  const numeric = info.params.filter((p) => p.type === "int" || p.type === "float");
+  const [x, setX] = useState<AxisDraft | null>(numeric[0] ? defaultAxis(numeric[0]) : null);
+  const [y, setY] = useState<AxisDraft | null>(null);
+  const [metric, setMetric] = useState<Metric>("total_return");
+  const spec = (name?: string) => numeric.find((p) => p.name === name);
+  const xs = x ? axisValues(x, spec(x.param)) : [];
+  const ys = y ? axisValues(y, spec(y.param)) : [];
+  const cells = xs.length * (y ? ys.length : 1);
+  const tooMany = xs.length > 25 || ys.length > 25 || cells > MAX_CELLS;
+
+  const run = useMutation({
+    mutationFn: () => api<SweepResult>("/api/strategies/sweep", {
+      method: "POST",
+      body: JSON.stringify({
+        strategy: d.strategy, symbol: d.symbol, market: d.market, interval: d.interval,
+        params: cleanParams(info, d.params, d.market), bars, compare_earlier: true, enter_on_enable: d.enter_on_enable,
+        ...(sizing ?? {}), x: { param: x!.param, values: xs }, ...(y ? { y: { param: y.param, values: ys } } : {}),
+      }),
+    }),
+  });
+
+  if (numeric.length === 0) {
+    return (
+      <div className="bt-panel">
+        <h2 style={{ margin: 0 }}>參數穩健性掃描</h2>
+        <p className="muted" style={{ margin: 0 }}>這個策略沒有可以掃描的數字參數。條件組合器的參數在規則裡，可以改用「均線趨勢」等內建策略來掃描。</p>
+      </div>
+    );
+  }
+
+  const axisEditor = (a: AxisDraft, setA: (v: AxisDraft) => void, others: string[]) => {
+    const sp = spec(a.param);
+    return (
+      <>
+        <label className="field">參數
+          <select value={a.param} onChange={(e) => setA(defaultAxis(spec(e.target.value)!))}>
+            {numeric.filter((p) => p.name === a.param || !others.includes(p.name)).map((p) => <option key={p.name} value={p.name}>{p.label}</option>)}
+          </select>
+          {sp && <small>範圍 {sp.min ?? "—"} ~ {sp.max ?? "—"}，目前設定 {String(d.params[a.param] ?? sp.default)}</small>}
+        </label>
+        <label className="field">從<input type="number" step="any" value={a.from} onChange={(e) => setA({ ...a, from: Number(e.target.value) })} /></label>
+        <label className="field">到<input type="number" step="any" value={a.to} onChange={(e) => setA({ ...a, to: Number(e.target.value) })} /></label>
+        <label className="field">間距<input type="number" step="any" min={0} value={a.step} onChange={(e) => setA({ ...a, step: Number(e.target.value) })} /></label>
+      </>
+    );
+  };
+
+  return (
+    <div className="bt-panel">
+      <h2 style={{ margin: 0 }}>參數穩健性掃描</h2>
+      <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+        每個參數組合都在「最近」與「更早」兩段期間各回測一次（期間長度、下單金額沿用上方回測設定）。
+        好的參數應該是一整片相連都不錯的區域；只有某個數值特別好、旁邊都差，多半是運氣。
+      </p>
+      <h2 style={{ fontSize: 13, margin: 0 }}>橫軸</h2>
+      <div className="form-grid">{x && axisEditor(x, setX, y ? [y.param] : [])}</div>
+      <label className="check">
+        <input type="checkbox" checked={!!y} disabled={numeric.length < 2} onChange={(e) => {
+          const other = numeric.find((p) => p.name !== x?.param);
+          setY(e.target.checked && other ? defaultAxis(other) : null);
+        }} />
+        加上第二個參數（縱軸）{numeric.length < 2 && "：這個策略只有一個數字參數"}
+      </label>
+      {y && <div className="form-grid">{axisEditor(y, setY, x ? [x.param] : [])}</div>}
+      <div className="toolbar" style={{ margin: 0 }}>
+        <label className="field" style={{ display: "flex", alignItems: "center", gap: 6 }}>顏色代表
+          <select value={metric} onChange={(e) => setMetric(e.target.value as Metric)}>
+            {Object.entries(METRICS).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+          </select>
+        </label>
+        <button className="btn" disabled={run.isPending || tooMany || xs.length === 0} onClick={() => run.mutate()}>
+          {run.isPending ? "掃描中…" : `掃描 ${cells} 個組合`}
+        </button>
+        <span className={tooMany ? "error-text" : "muted"} style={{ fontSize: 12 }}>
+          {tooMany ? `最多 ${MAX_CELLS} 個組合（每軸最多 25 個值），請縮小範圍或加大間距` : `每個組合跑兩段回測；組合多、K 棒多時可能要一兩分鐘`}
+        </span>
+      </div>
+      {run.isError && <p className="error-text" style={{ margin: 0 }}>{(run.error as Error).message}</p>}
+      {run.data && <SweepHeatmap data={run.data} metric={metric} />}
+    </div>
+  );
+}
+
 function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial: Draft; onDone: () => void }) {
   const qc = useQueryClient();
   const bot = useQuery({ queryKey: ["bot"], queryFn: () => api<BotSettings>("/api/bot") });
@@ -222,6 +330,17 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
         <RuleBuilder key={p.name} market={d.market} value={d.params[p.name] ?? p.default}
           onChange={(v) => set("params", { ...d.params, [p.name]: v })} />
       ))}
+      <label className="field" style={{ maxWidth: 420, marginTop: 14 }}>執行方式
+        <select value={d.mode} onChange={(e) => set("mode", e.target.value as Draft["mode"])}>
+          <option value="live">實際下單</option>
+          <option value="shadow">影子模式（只記錄、不下單）</option>
+        </select>
+        <small>
+          {d.mode === "shadow"
+            ? "照常判斷，但只記錄虛擬交易：不送單、不佔用部位，同一個交易對可以同時跑好幾個影子策略。結果在下方「實際績效」"
+            : "照判斷真的下單；同一個交易對同時只能有一個實際下單的策略。改成影子模式不會平掉既有部位"}
+        </small>
+      </label>
       <label className="check" style={{ marginTop: 14 }}>
         <input type="checkbox" checked={d.enter_on_enable} onChange={(e) => set("enter_on_enable", e.target.checked)} />
         啟用時立即依目前判斷進場
@@ -295,7 +414,8 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
       </div>
       <div className="toolbar" style={{ marginTop: 16, marginBottom: 0 }}>
         <span className="muted" style={{ fontSize: 12 }}>
-          實際下單使用「設定」頁的下單規則。{d.enter_on_enable ? "啟用後第一次判斷就會照目前判斷進場。" : "啟用後會等策略判斷「改變」時才下單，不會立刻進場。"}
+          {d.mode === "shadow" ? "影子模式的虛擬交易同樣使用「設定」頁的下單規則（虛擬帳戶起始 10,000 USDT）。" : "實際下單使用「設定」頁的下單規則。"}
+          {d.enter_on_enable ? "啟用後第一次判斷就會照目前判斷進場。" : "啟用後會等策略判斷「改變」時才進場，不會立刻進場。"}
         </span>
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={onDone}>取消</button>
@@ -305,6 +425,7 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
       {backtest.isError && <p className="error-text">{(backtest.error as Error).message}</p>}
       {save.isError && <p className="error-text">{(save.error as Error).message}</p>}
       {backtest.data && <BacktestView result={backtest.data} compareRequested={backtest.variables?.compare ?? false} />}
+      <SweepPanel key={d.strategy} info={info} d={d} bars={bars} sizing={sizing} />
     </div>
   );
 }
@@ -356,7 +477,7 @@ function Performance({ labelOf }: { labelOf: (key: string) => string }) {
               const bt = shown ? cmp.data?.stats : undefined;
               return [
                 <tr key={c.id}>
-                  <td>{c.name}<div className="muted" style={{ fontSize: 12 }}>{labelOf(c.strategy)} · {c.symbol} {c.interval}{c.enabled ? "" : " · 已停用"}</div></td>
+                  <td>{c.name}{c.mode === "shadow" && <span className="badge" style={{ marginLeft: 6 }}>影子（虛擬）</span>}<div className="muted" style={{ fontSize: 12 }}>{labelOf(c.strategy)} · {c.symbol} {c.interval}{c.enabled ? "" : " · 已停用"}</div></td>
                   <td className="muted">{fmtTime(since(c))}</td>
                   <PerfCells p={x} />
                   <td>
@@ -406,7 +527,7 @@ export function Strategies() {
       method: "PUT",
       body: JSON.stringify({
         name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params,
-        enabled: !c.enabled, enter_on_enable: c.enter_on_enable,
+        enabled: !c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode,
       }),
     }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["strategies"] }),
@@ -420,7 +541,7 @@ export function Strategies() {
   const labelOf = (key: string) => catalog.data.find((c) => c.key === key)?.label ?? key;
   const newDraft = (): Draft => {
     const first = catalog.data[0];
-    return { name: autoName("BTCUSDT", first.label, "1h"), strategy: first.key, symbol: "BTCUSDT", market: "futures", interval: "1h", params: defaults(first), enabled: false, enter_on_enable: false };
+    return { name: autoName("BTCUSDT", first.label, "1h"), strategy: first.key, symbol: "BTCUSDT", market: "futures", interval: "1h", params: defaults(first), enabled: false, enter_on_enable: false, mode: "live" };
   };
 
   return (
@@ -439,7 +560,7 @@ export function Strategies() {
               <thead><tr><th>名稱</th><th>策略</th><th>交易對</th><th>週期</th><th>狀態</th><th>目前判斷</th><th>最後判斷時間</th><th /></tr></thead>
               <tbody>{configs.data!.map((c) => (
                 <tr key={c.id}>
-                  <td>{c.name}</td>
+                  <td>{c.name}{c.mode === "shadow" && <span className="badge" style={{ marginLeft: 6 }}>影子</span>}</td>
                   <td className="muted">{labelOf(c.strategy)}</td>
                   <td>{c.symbol} <span className="muted">{c.market === "futures" ? "合約" : "現貨"}</span></td>
                   <td>{c.interval}</td>
@@ -451,7 +572,7 @@ export function Strategies() {
                   <td className="muted">{c.last_bar_time ? fmtTime(new Date(c.last_bar_time * 1000).toISOString()) : "—"}</td>
                   <td style={{ display: "flex", gap: 6 }}>
                     <button className="btn small" disabled={toggle.isPending} onClick={() => toggle.mutate(c)}>{c.enabled ? "停用" : "啟用"}</button>
-                    <button className="btn small" onClick={() => setEditing({ id: c.id, name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, enabled: c.enabled, enter_on_enable: c.enter_on_enable })}>編輯／回測</button>
+                    <button className="btn small" onClick={() => setEditing({ id: c.id, name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, enabled: c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode })}>編輯／回測</button>
                     <button className="btn small danger" disabled={remove.isPending} onClick={() => confirm(`刪除策略「${c.name}」？既有持倉不會自動平倉。`) && remove.mutate(c.id)}>刪除</button>
                   </td>
                 </tr>

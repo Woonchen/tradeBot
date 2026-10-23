@@ -13,6 +13,11 @@
   --series-2: #e07b1f;
   --series-3: #8a4fd6;
   --series-4: #138f8f;
+  /* 發散色階（熱圖）：藍 = 正、紅 = 負、灰 = 接近零；不用紅綠，色盲也分得出來 */
+  --div-pos: #2a78d6;
+  --div-neg: #e34948;
+  --div-mid: #f0efec;
+  --heat-step: 16%; /* 熱圖每一階的色相比例；最深 5 階，文字對比 ≥ 6:1 */
   --up: #0ca30c;
   --down: #d03b3b;
   --warn: #fab219;
@@ -38,6 +43,10 @@
     --series-2: #f0953f;
     --series-3: #a77bf0;
     --series-4: #2fb5b5;
+    --div-pos: #3987e5;
+    --div-neg: #e66767;
+    --div-mid: #383835;
+    --heat-step: 12%; /* 深色模式最深 60%，淺色文字對比仍 ≥ 4.5:1 */
     --up-text: #3fc43f;
     --down-text: #f07272;
     --warn-text: #fab219;
@@ -59,6 +68,10 @@
   --series-2: #f0953f;
   --series-3: #a77bf0;
   --series-4: #2fb5b5;
+  --div-pos: #3987e5;
+  --div-neg: #e66767;
+  --div-mid: #383835;
+  --heat-step: 12%;
   --up-text: #3fc43f;
   --down-text: #f07272;
   --warn-text: #fab219;
@@ -148,6 +161,21 @@ label.field small { color: var(--text-3); }
 .bt-panel { display: grid; gap: 12px; margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
 .bt-panel .form-grid input, .bt-panel .form-grid select { background: var(--surface); }
 label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+
+/* ---------- heatmap ---------- */
+.heat-wrap { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); }
+.heat { border-collapse: separate; border-spacing: 2px; font-size: 12px; }
+.heat th { color: var(--text-2); font-weight: 500; padding: 2px 6px; border: 0; text-align: center; }
+.heat th.y { text-align: right; }
+.heat td { padding: 0; border: 0; }
+.heat .cell { min-width: 48px; padding: 0 4px; height: 30px; border-radius: 4px; display: flex; align-items: center; justify-content: center;
+  color: var(--text); font-variant-numeric: tabular-nums; cursor: default; outline: none; border: 2px solid transparent; }
+.heat .cell.both { border-color: var(--text); font-weight: 600; }
+.heat .cell:hover, .heat .cell:focus-visible { filter: brightness(1.12); box-shadow: 0 0 0 2px var(--accent); }
+.heat .cell.na { background: var(--surface-2); color: var(--text-3); }
+.heat-legend { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); flex-wrap: wrap; }
+.heat-legend .ramp { display: flex; gap: 2px; }
+.heat-legend .ramp span { width: 18px; height: 12px; border-radius: 2px; }
 
 /* ---------- settings ---------- */
 .settings { padding: 0 20px; }
