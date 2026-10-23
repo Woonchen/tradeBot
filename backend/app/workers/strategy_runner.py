@@ -58,7 +58,7 @@ class StrategyRunner:
             sec = INTERVAL_SECONDS[cfg.interval]
             try:
                 strat = build_strategy(cfg.strategy, cfg.params)
-                adapter = self.ex.adapters[cfg.market]
+                adapter = self.ex.market_data[cfg.market]  # 判斷用真實市場行情；下單仍走帳戶（executor）
                 symbol = await adapter.resolve_symbol(cfg.symbol)
                 candles = await fetch_candles(adapter, symbol, cfg.interval, strat.warmup)
                 if self.sentiment:

@@ -1,4 +1,4 @@
-from .base import Candle, Param, Strategy, Target, register
+from .base import Candle, Param, Strategy, Target, plot, register
 from .indicators import rsi
 
 
@@ -25,6 +25,10 @@ class RsiReversion(Strategy):
     @property
     def warmup(self) -> int:
         return max(self.p["length"] * 20, 300)
+
+    def plots(self, candles: list[Candle]) -> list[dict]:
+        levels = [self.p["oversold"], self.p["exit_level"], self.p["overbought"]]
+        return [plot(f"RSI{self.p['length']}", rsi([c.close for c in candles], self.p["length"]), "sub", "RSI", levels)]
 
     def targets(self, candles: list[Candle]) -> list[Target]:
         r = rsi([c.close for c in candles], self.p["length"])

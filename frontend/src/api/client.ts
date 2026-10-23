@@ -158,10 +158,13 @@ export interface SweepResult {
   cells: SweepCell[][];
   sizing: BacktestSizing; bars: number; earlier_available: boolean;
 }
+/** 回測圖要畫的指標（跟策略判斷同一份計算），values 跟 candles 對齊 */
+export interface Plot { name: string; values: (number | null)[]; pane: "main" | "sub"; group: string; levels: number[] }
 export interface BacktestResult {
   symbol: string; params: Record<string, any>; candles: (Candle & { volume: number })[];
   trades: BacktestTrade[]; equity: { time: number; value: number }[];
   stats: BacktestStats;
+  plots: Plot[];
   sizing: BacktestSizing;
   /** 前面多抓、只用來計算指標的 K 棒數（不計入結果） */
   warmup: number;

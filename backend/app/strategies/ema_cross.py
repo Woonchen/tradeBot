@@ -1,4 +1,4 @@
-from .base import Candle, Param, Strategy, Target, register
+from .base import Candle, Param, Strategy, Target, plot, register
 from .indicators import atr, crossover, crossunder, ema
 
 
@@ -25,6 +25,10 @@ class EmaCross(Strategy):
     @property
     def warmup(self) -> int:
         return max(self.p["slow"] * 10, 300)
+
+    def plots(self, candles: list[Candle]) -> list[dict]:
+        closes = [c.close for c in candles]
+        return [plot(f"EMA{self.p['fast']}（快）", ema(closes, self.p["fast"])), plot(f"EMA{self.p['slow']}（慢）", ema(closes, self.p["slow"]))]
 
     def targets(self, candles: list[Candle]) -> list[Target]:
         closes = [c.close for c in candles]

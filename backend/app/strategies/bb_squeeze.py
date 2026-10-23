@@ -1,4 +1,4 @@
-from .base import Candle, Param, Strategy, Target, register
+from .base import Candle, Param, Strategy, Target, plot, register
 from .indicators import crossover, crossunder, ema, sma
 from .rules import _rolling_std
 
@@ -32,16 +32,34 @@ class BollingerSqueeze(Strategy):
         # EMA 從 SMA 起算，要多抓幾倍長度才會跟交易所圖表上的值一致
         return max(300, (self.p["length"] + self.p["bw_avg_len"] + self.p["squeeze_bars"]) * 3, self.p["trend_ema"] * 5)
 
-    def targets(self, candles: list[Candle]) -> list[Target]:
+    def _series(self, candles: list[Candle]) -> dict:
+        """判斷與畫圖共用的指標。"""
         p = self.p
         closes = [c.close for c in candles]
         mid = sma(closes, p["length"])
         sd = _rolling_std(closes, p["length"])
         upper = [None if m is None else m + p["mult"] * s for m, s in zip(mid, sd)]
+        lower = [None if m is None else m - p["mult"] * s for m, s in zip(mid, sd)]
         # 通道寬度用中軌的比例表示，不同價位的幣才能用同一組參數
         width = [None if m is None or not m else (2 * p["mult"] * s) / m for m, s in zip(mid, sd)]
         avg = _sma_partial(width, p["bw_avg_len"])
         trend = ema(closes, p["trend_ema"]) if p["trend_ema"] else None
+        return {"closes": closes, "mid": mid, "upper": upper, "lower": lower, "width": width, "avg": avg, "trend": trend}
+
+    def plots(self, candles: list[Candle]) -> list[dict]:
+        x = self._series(candles)
+        pct = lambda v: [None if a is None else a * 100 for a in v]  # noqa: E731
+        out = [plot("布林上軌", x["upper"]), plot("布林中軌", x["mid"]), plot("布林下軌", x["lower"])]
+        if x["trend"]:
+            out.append(plot(f"EMA{self.p['trend_ema']}（趨勢過濾）", x["trend"]))
+        # 寬度低於平均 = 收窄；連續收窄夠久才算盤整
+        out += [plot("通道寬度 %", pct(x["width"]), "sub", "通道寬度"), plot(f"寬度平均（{self.p['bw_avg_len']}）", pct(x["avg"]), "sub", "通道寬度")]
+        return out
+
+    def targets(self, candles: list[Candle]) -> list[Target]:
+        p = self.p
+        x = self._series(candles)
+        closes, mid, upper, width, avg, trend = x["closes"], x["mid"], x["upper"], x["width"], x["avg"], x["trend"]
 
         out: list[Target] = []
         pos: Target = "flat"

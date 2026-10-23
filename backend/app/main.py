@@ -11,7 +11,7 @@ from .config import settings
 from .db import SessionLocal, engine
 from .engine.executor import Executor
 from .engine.risk import load_bot_settings
-from .exchange.factory import build_adapters
+from .exchange.factory import build_adapters, build_market_data
 from .services.event_bus import EventBus
 from .services.market_stream import MarketHub
 from .services.sentiment import Sentiment, tracked_tickers
@@ -47,6 +47,7 @@ async def lifespan(app: FastAPI):
     bus = EventBus(SessionLocal)
     adapters = build_adapters(settings, SessionLocal)
     executor = Executor(adapters, bus, SessionLocal)
+    executor.market_data = build_market_data(settings, adapters)
     hub = MarketHub(executor, settings)
     sentiment = Sentiment(SessionLocal)
     runner = StrategyRunner(executor, sentiment)
@@ -71,7 +72,7 @@ async def lifespan(app: FastAPI):
     finally:
         for t in tasks:
             t.cancel()
-        for a in adapters.values():
+        for a in {*adapters.values(), *executor.market_data.values()}:
             await a.close()
         await sentiment.close()
         await engine.dispose()

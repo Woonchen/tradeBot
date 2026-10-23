@@ -19,7 +19,7 @@ async def klines(
 ):
     if interval not in INTERVALS:
         raise HTTPException(422, f"interval 必須是 {sorted(INTERVALS)} 之一")
-    adapter = executor.adapters.get(market)
+    adapter = executor.market_data.get(market)  # 真實市場行情（Demo 的 K 線有假影線）
     if adapter is None:
         raise HTTPException(422, "market 必須是 spot 或 futures")
     try:

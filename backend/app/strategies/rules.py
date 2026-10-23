@@ -9,7 +9,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .base import Candle, Param, Strategy, Target, register
+from .base import Candle, Param, Strategy, Target, plot, register
 from .external import EXTERNAL_KINDS, align
 from .indicators import atr, crossover, crossunder, ema, kd, rsi, sma
 
@@ -242,6 +242,33 @@ def _max_length(op: dict) -> int:
     return int(op.get("length", 1))
 
 
+# 回測圖：價格尺度的指標疊在 K 線上，其他畫在副圖（同一類同一格）
+_ON_PRICE = {"sma", "ema", "bb_upper", "bb_middle", "bb_lower", "highest", "lowest"}
+_SUB_GROUP = {
+    "rsi": "RSI", "kd_k": "KD", "kd_d": "KD", "macd": "MACD", "macd_signal": "MACD", "macd_hist": "MACD",
+    "atr": "ATR", "fear_greed": "恐懼貪婪指數", "funding_rate": "資金費率 %",
+}
+_ZH = {"bb_upper": "布林上軌", "bb_middle": "布林中軌", "bb_lower": "布林下軌", "macd": "MACD", "macd_signal": "MACD 訊號線",
+       "macd_hist": "MACD 柱", "fear_greed": "恐懼貪婪指數", "funding_rate": "資金費率"}
+
+
+def _name(op: dict) -> str:
+    k = op["kind"]
+    if k in ("sma", "ema"):
+        return f"{k.upper()}{op['length']}" + (f"（{op['source']}）" if op.get("source", "close") != "close" else "")
+    if k in ("rsi", "atr"):
+        return f"{k.upper()}{op['length']}"
+    if k in ("highest", "lowest"):
+        return f"前 {op['length']} 根{'最高' if k == 'highest' else '最低'}價"
+    if k.startswith("bb_"):
+        return f"{_ZH[k]}（{op['length']}, {op['mult']}）"
+    if k in ("kd_k", "kd_d"):
+        return f"{'K' if k == 'kd_k' else 'D'}{op['length']}"
+    if k.startswith("macd"):
+        return f"{_ZH[k]}（{op['fast']}, {op['slow']}, {op['signal']}）"
+    return _ZH.get(k, k)
+
+
 @register
 class RuleStrategy(Strategy):
     key = "rules"
@@ -268,6 +295,30 @@ class RuleStrategy(Strategy):
         r = self.p["rules"]
         return [c[side] for g in ("long_entry", "long_exit", "short_entry", "short_exit")
                 for c in r[g]["conditions"] for side in ("left", "right")]
+
+    def plots(self, candles: list[Candle]) -> list[dict]:
+        """規則裡用到的每個指標各一條線；跟數值比較的條件（例如 RSI < 30）畫成副圖的水平線。"""
+        r = self.p["rules"]
+        cache: dict = {"__ext__": getattr(self, "ext", {})}
+        ops: dict[str, dict] = {}
+        levels: dict[str, set[float]] = {}
+        for g in ("long_entry", "long_exit", "short_entry", "short_exit"):
+            for c in r[g]["conditions"]:
+                for op, other in ((c["left"], c["right"]), (c["right"], c["left"])):
+                    if op["kind"] in ("value", "price"):
+                        continue
+                    ops.setdefault(repr(sorted(op.items())), op)
+                    if other["kind"] == "value" and op["kind"] in _SUB_GROUP:
+                        levels.setdefault(_SUB_GROUP[op["kind"]], set()).add(other["value"])
+        out = []
+        for op in ops.values():
+            values = compute(op, candles, cache)
+            if op["kind"] in _ON_PRICE:
+                out.append(plot(_name(op), values))
+            else:
+                group = _SUB_GROUP[op["kind"]]
+                out.append(plot(_name(op), values, "sub", group, sorted(levels.get(group, []))))
+        return out
 
     def targets(self, candles: list[Candle]) -> list[Target]:
         r = self.p["rules"]

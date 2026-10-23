@@ -130,7 +130,7 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
       </div>
       <div className="card">
         <h2>{result.symbol} 回測（{s.bars} 根 K 棒）</h2>
-        <BacktestChart candles={result.candles} trades={result.trades} />
+        <BacktestChart candles={result.candles} trades={result.trades} plots={result.plots} />
         <div className="legend-row">
           <span><span className="up">▲</span> 開多／平空</span><span><span className="down">▼</span> 平多／開空，平倉標註淨損益</span>
           <span className="muted">訊號在 K 棒收盤產生，下一根開盤成交</span>

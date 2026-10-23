@@ -1,4 +1,4 @@
-from .base import Candle, Param, Strategy, Target, register
+from .base import Candle, Param, Strategy, Target, plot, register
 from .indicators import ema, sma
 
 
@@ -20,9 +20,15 @@ class MaTrend(Strategy):
     def warmup(self) -> int:
         return max(300, self.p["length"] * (5 if self.p["use_ema"] else 2))
 
+    def _ma(self, candles: list[Candle]) -> list[float | None]:
+        return (ema if self.p["use_ema"] else sma)([c.close for c in candles], self.p["length"])
+
+    def plots(self, candles: list[Candle]) -> list[dict]:
+        return [plot(f"{'EMA' if self.p['use_ema'] else 'SMA'}{self.p['length']}", self._ma(candles))]
+
     def targets(self, candles: list[Candle]) -> list[Target]:
         closes = [c.close for c in candles]
-        ma = (ema if self.p["use_ema"] else sma)(closes, self.p["length"])
+        ma = self._ma(candles)
         out: list[Target] = []
         pos: Target = "flat"
         for c, m in zip(closes, ma):

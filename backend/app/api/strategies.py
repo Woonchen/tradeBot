@@ -59,7 +59,7 @@ async def _validate(body: StrategyBody | BacktestBody, ex: Executor) -> str:
     except ValueError as e:
         raise HTTPException(422, str(e))
     try:
-        return await ex.adapters[body.market].resolve_symbol(body.symbol)
+        return await ex.market_data[body.market].resolve_symbol(body.symbol)
     except UnknownSymbol:
         raise HTTPException(422, f"找不到交易對 {body.symbol}（{body.market}）")
 
@@ -107,7 +107,7 @@ async def _shadow_stats(s: AsyncSession, ex: Executor) -> dict[int, OwnerStats]:
             key = (t.market, t.symbol)
             if key not in prices:
                 try:
-                    prices[key] = await ex.adapters[t.market].fetch_price(t.symbol)
+                    prices[key] = await ex.market_data[t.market].fetch_price(t.symbol)
                 except Exception:  # 拿不到價格就不顯示未實現損益
                     prices[key] = None
             price = prices[key]
@@ -251,7 +251,7 @@ async def backtest(
     await _attach(request, [strat], body.symbol)
     n, warm = body.bars, strat.warmup  # 每段前面多抓 warm 根讓指標穩定，不計入結果
     candles = await fetch_candles(
-        ex.adapters[body.market], symbol, body.interval, n * (2 if body.compare_earlier else 1) + warm,
+        ex.market_data[body.market], symbol, body.interval, n * (2 if body.compare_earlier else 1) + warm,
     )
     recent = candles[-(n + warm):]
     recent_warm = max(0, len(recent) - n)  # 上市不久的幣，歷史不夠就少暖一點
@@ -269,6 +269,8 @@ async def backtest(
         "sizing": sizing,
         "warmup": recent_warm,
         "candles": [c.__dict__ for c in recent[recent_warm:]],
+        # 策略用到的指標（跟判斷同一份計算），跟 candles 對齊
+        "plots": [{**p, "values": p["values"][recent_warm:]} for p in strat.plots(recent)],
         "trades": res.trades,
         "equity": res.equity,
         "stats": res.stats,
@@ -349,7 +351,7 @@ async def sweep(
         sizing = _sizing(body, bot)
         follow = {"follow_initial": body.enter_on_enable, **await _funding(request, body.market, body.symbol)}
         n, warm = body.bars, max(st.warmup for st in valid)
-        candles = await fetch_candles(ex.adapters[body.market], symbol, body.interval, n * (2 if body.compare_earlier else 1) + warm)
+        candles = await fetch_candles(ex.market_data[body.market], symbol, body.interval, n * (2 if body.compare_earlier else 1) + warm)
         recent = candles[-(n + warm):]
         recent_warm = max(0, len(recent) - n)
         if len(recent) - recent_warm < 50:

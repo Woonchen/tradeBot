@@ -300,6 +300,9 @@ async def test_backtest_api_warmup_and_earlier_period(env, monkeypatch):  # noqa
         def targets(self, candles):
             return ["long" if i % 10 < 5 else "flat" for i in range(len(candles))]
 
+        def plots(self, candles):
+            return []
+
     monkeypatch.setattr(api, "fetch_candles", fake_fetch)
     monkeypatch.setattr(api, "build_strategy", lambda k, p: Scripted())
 
@@ -528,3 +531,30 @@ def test_backtest_funding_inside_daily_bar_uses_close():
                      funding=[(T0 + D + 8 * H, 0.01)])  # 第 1 根日 K 中間的結算
     (t,) = r.trades
     assert t["funding"] == pytest.approx(t["qty"] * 110 * 0.0001)  # 用那根的收盤價 110 近似
+
+
+def test_plots_match_what_strategies_use():
+    closes = [100 + 10 * math.sin(i / 8) for i in range(300)]
+    c = candles_from(closes)
+    bb = {p["name"]: p for p in build_strategy("bb_squeeze", {"trend_ema": 50}).plots(c)}
+    assert {"布林上軌", "布林中軌", "布林下軌", "EMA50（趨勢過濾）", "通道寬度 %"} <= set(bb)
+    assert bb["通道寬度 %"]["pane"] == "sub" and all(len(p["values"]) == 300 for p in bb.values())
+    assert build_strategy("ma_trend", {"length": 20}).plots(c)[0]["values"] == sma(closes, 20)
+
+    rsi_ = build_strategy("rsi_reversion").plots(c)[0]
+    assert rsi_["group"] == "RSI" and rsi_["levels"] == [30, 50, 70]
+
+    # 條件組合器：每個用到的指標一條線，跟數值比較的條件變成副圖的水平線
+    K, D = {"kind": "kd_k", "length": 9}, {"kind": "kd_d", "length": 9}
+    rules = {"rules": {
+        "long_entry": {"logic": "and", "conditions": [
+            {"left": K, "cmp": "crosses_above", "right": D},
+            {"left": K, "cmp": "<", "right": {"kind": "value", "value": 30}},
+            {"left": {"kind": "price", "field": "close"}, "cmp": ">", "right": {"kind": "ema", "length": 200, "source": "close"}},
+        ]},
+        "long_exit": {"logic": "or", "conditions": [{"left": K, "cmp": "crosses_below", "right": D}]},
+    }}
+    ps = {p["name"]: p for p in build_strategy("rules", rules).plots(c)}
+    assert set(ps) == {"K9", "D9", "EMA200"}  # K 用了三次也只畫一條；價格不畫
+    assert ps["EMA200"]["pane"] == "main" and ps["K9"]["group"] == ps["D9"]["group"] == "KD"
+    assert ps["K9"]["levels"] == [30]

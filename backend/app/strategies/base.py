@@ -87,6 +87,14 @@ class Strategy:
         """
         raise NotImplementedError
 
+    def plots(self, candles: list["Candle"]) -> list[dict]:
+        """回測圖要畫的指標（用跟 targets 同一份計算，圖上的線就是策略實際看到的線）。
+
+        每一項：{"name", "values"（跟 candles 對齊，None = 還沒有值）, "pane": "main" 疊在 K 線上 / "sub" 副圖,
+        "group": 副圖名稱（同名的畫在同一格）, "levels": 副圖的水平參考線}。用 plot() 產生。
+        """
+        return []
+
     @classmethod
     def describe(cls) -> dict:
         return {
@@ -108,6 +116,10 @@ def build_strategy(key: str, params: dict | None = None) -> Strategy:
     if cls is None:
         raise ValueError(f"找不到策略：{key}")
     return cls(params)
+
+
+def plot(name: str, values: list, pane: str = "main", group: str | None = None, levels: list[float] | None = None) -> dict:
+    return {"name": name, "values": values, "pane": pane, "group": group or name, "levels": levels or []}
 
 
 def for_market(target: Target, market: str) -> Target:

@@ -108,7 +108,14 @@ class MarketHub:
         self.ex = executor
         self.bus = executor.bus
         env = "demo" if cfg.execution_mode == "binance" and cfg.testnet else "live"
+        # 持倉的即時價格（軟體停損）跟帳戶走：Demo 帳戶看 Demo 的價格
         self.conns = {m: StreamConnection(m, url, self._on_event) for m, url in WS_URLS[env].items()}
+        # 圖表的 K 線一律用真實市場（Demo 的 K 線有假影線）：Demo 模式另開一組連線，其他模式共用上面那組
+        self.separate_chart = env == "demo"
+        self.chart_conns = (
+            {m: StreamConnection(f"{m}-chart", url, self._on_chart_event) for m, url in WS_URLS["live"].items()}
+            if self.separate_chart else {}
+        )
         # (market, ccxt symbol) -> (價格, 收到的時間)
         self.prices: dict[tuple[str, str], tuple[float, float]] = {}
         # 前端 client -> (market, stream, ccxt symbol, interval)
@@ -123,14 +130,14 @@ class MarketHub:
         self.bus.listeners.append(self._on_bus_event)
 
     def start(self) -> list[asyncio.Task]:
-        tasks = [asyncio.create_task(c.run()) for c in self.conns.values()]
+        tasks = [asyncio.create_task(c.run()) for c in [*self.conns.values(), *self.chart_conns.values()]]
         tasks.append(asyncio.create_task(self._broadcast_prices()))
         tasks.append(asyncio.create_task(self.refresh_positions()))
         return tasks
 
     # ------------------------------------------------------------ 共用
     async def _market_id(self, market: str, symbol: str) -> str:
-        adapter = self.ex.adapters[market]
+        adapter = self.ex.market_data[market]  # Binance 的 id 在 Demo 與真實市場相同
         await adapter.ensure_loaded()
         mid = adapter.ex.markets[symbol]["id"]
         self._ids[(market, mid)] = symbol
@@ -142,11 +149,16 @@ class MarketHub:
         t.add_done_callback(self._tasks.discard)
 
     async def _sync_streams(self, market: str):
-        wanted = {stream for (m, stream, _, _) in self.charts.values() if m == market}
-        for m, mid in self._watches:
-            if m == market:
-                wanted.add(f"{mid.lower()}@markPrice@1s" if market == "futures" else f"{mid.lower()}@miniTicker")
-        await self.conns[market].set_streams(wanted)
+        charts = {stream for (m, stream, _, _) in self.charts.values() if m == market}
+        prices = {
+            f"{mid.lower()}@markPrice@1s" if market == "futures" else f"{mid.lower()}@miniTicker"
+            for m, mid in self._watches if m == market
+        }
+        if self.separate_chart:
+            await self.conns[market].set_streams(prices)
+            await self.chart_conns[market].set_streams(charts)
+        else:
+            await self.conns[market].set_streams(charts | prices)
 
     def fresh_price(self, market: str, symbol: str, max_age: float = 5.0) -> float | None:
         hit = self.prices.get((market, symbol))
@@ -154,13 +166,13 @@ class MarketHub:
 
     @property
     def status(self) -> dict[str, bool]:
-        return {m: c.connected for m, c in self.conns.items()}
+        return {m: c.connected and (not self.separate_chart or self.chart_conns[m].connected) for m, c in self.conns.items()}
 
     # ------------------------------------------------------------ K 線（前端圖表）
     async def watch_chart(self, client: WebSocket, symbol: str, market: str, interval: str) -> str:
         if market not in self.conns or interval not in KLINE_INTERVALS:
             raise ValueError("market 或 interval 不正確")
-        resolved = await self.ex.adapters[market].resolve_symbol(symbol)
+        resolved = await self.ex.market_data[market].resolve_symbol(symbol)
         mid = await self._market_id(market, resolved)
         old = self.charts.get(client)
         self.charts[client] = (market, f"{mid.lower()}@kline_{interval}", resolved, interval)
@@ -238,6 +250,11 @@ class MarketHub:
                 await self.bus.broadcast({"type": "prices", "data": data, "log": None})
 
     # ------------------------------------------------------------ Binance 事件
+    async def _on_chart_event(self, name: str, msg: dict):
+        """圖表專用連線（Demo 模式）：只轉發 K 線。"""
+        if msg["e"] == "kline":
+            await self._on_event(name.removesuffix("-chart"), msg)
+
     async def _on_event(self, market: str, msg: dict):
         e = msg["e"]
         if e == "kline":

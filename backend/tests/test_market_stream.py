@@ -98,3 +98,41 @@ async def test_kline_forwarding(hub):
     assert h.conns["spot"].streams == set()
     with pytest.raises(ValueError):
         await h.watch_chart(a, "BTCUSDT", "spot", "7m")
+
+
+async def test_demo_mode_charts_use_real_market_stream(env):  # noqa: F811
+    """Demo 模式：圖表 K 線走真實市場的連線，持倉價格（停損用）仍走 Demo 的連線。"""
+    ex, sf, adapters = env
+    for a in adapters.values():
+        a.ex = SimpleNamespace(markets=MARKETS)
+        a._loaded = True
+    h = MarketHub(ex, Settings(execution_mode="binance", testnet=True))
+    assert h.separate_chart and h.chart_conns["futures"].url.startswith("wss://fstream.binance.com")
+    h.conns = {"spot": RecordingConn(), "futures": RecordingConn()}
+    h.chart_conns = {"spot": RecordingConn(), "futures": RecordingConn()}
+    await h.watch_chart(FakeClient(), "BTCUSDT", "futures", "15m")
+    h._watches[("futures", "BTCUSDT")] = []
+    await h._sync_streams("futures")
+    assert h.chart_conns["futures"].streams == {"btcusdt@kline_15m"}
+    assert h.conns["futures"].streams == {"btcusdt@markPrice@1s"}
+
+    # 圖表連線收到的 K 線照樣轉發；收到價格事件則忽略（價格只認 Demo 的）
+    client = FakeClient()
+    await h.watch_chart(client, "BTCUSDT", "spot", "1m")
+    k = {"t": 1_700_000_040_000, "i": "1m", "o": "1", "h": "3", "l": "0.5", "c": "2", "v": "10"}
+    await h._on_chart_event("spot-chart", {"e": "kline", "s": "BTCUSDT", "k": k})
+    assert len(client.sent) == 1
+    await h._on_chart_event("futures-chart", {"e": "markPriceUpdate", "s": "BTCUSDT", "p": "1"})
+    assert h.prices == {}
+
+
+async def test_market_data_source_by_mode():
+    from app.exchange.factory import build_market_data
+
+    own = {"spot": object(), "futures": object()}
+    assert build_market_data(Settings(execution_mode="paper"), own) is own  # Paper 本來就是公開資料
+    assert build_market_data(Settings(execution_mode="binance", testnet=False), own) is own  # 正式帳戶 = 真實市場
+    demo = build_market_data(Settings(execution_mode="binance", testnet=True), own)
+    assert demo is not own and demo["futures"].ex.urls["api"]["fapiPublic"].startswith("https://fapi.binance.com")
+    for a in demo.values():
+        await a.close()

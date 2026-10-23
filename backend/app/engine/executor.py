@@ -34,7 +34,8 @@ class Executor:
     """
 
     def __init__(self, adapters: dict[str, ExchangeAdapter], bus: EventBus, session_factory: async_sessionmaker):
-        self.adapters = adapters
+        self.adapters = adapters  # 下單、餘額、持倉
+        self.market_data = adapters  # 分析用的行情；Demo 模式下由 main 換成真實市場（見 exchange/factory.py）
         self.bus = bus
         self.sf = session_factory
         self.queue: asyncio.Queue[int] = asyncio.Queue()
