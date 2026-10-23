@@ -1,7 +1,11 @@
 """用同一份策略程式回測。
 
 - 第 i 根收盤時策略判斷改變 → 第 i+1 根「開盤價」成交（避免用收盤價成交的偷看）
-- 每次成交扣 taker 手續費；不模擬滑價、資金費率和強平
+- 每次成交扣 taker 手續費；不模擬滑價和強平
+- 合約有提供 funding（Binance 的歷史資金費率）時，照實際持倉扣收資金費：每次結算時
+  部位價值 × 當次費率，費率為正時多單付、空單收（負的反過來）。結算先於下單：剛好在結算時刻
+  開倉不用付、剛好在結算時刻平倉要付。結算時間是 K 棒開盤就用開盤價，落在 K 棒中間（例如日 K）
+  用收盤價近似
 - 停損停利跟機器人一樣以開倉價的百分比算出觸發價，用每根 K 棒的最高／最低價判斷：
   觸及就以觸發價出場（開盤就跳空越過時以開盤價）；同一根同時碰到兩邊時當作先停損（保守估計）。
   停損停利出場後，策略判斷沒變就不會再進場，要等判斷改變（跟實際執行一樣）
@@ -39,7 +43,9 @@ def run_backtest(
     stop_loss_pct: float = 0,
     take_profit_pct: float = 0,
     follow_initial: bool = False,
+    funding: list[tuple[int, float]] | None = None,
 ) -> BacktestResult:
+    """funding：[(結算時間秒, 每 8 小時費率 %)]，依時間排序；只用在合約。"""
     if fee_rate is None:
         fee_rate = 0.001 if market == "spot" else 0.0004
     lev = max(leverage, 1) if market == "futures" else 1
@@ -60,21 +66,41 @@ def run_backtest(
     entry_fee = 0.0
     stop = tp = None
     blocked = None  # 被停損停利出場時的策略判斷；判斷沒變之前不再進場
+    trade_funding = 0.0  # 這筆交易付掉的資金費（收到為負）
+    total_funding = 0.0
+    rates = funding if market == "futures" and funding else []
+    fi = 0  # 下一個還沒處理的結算
+    while fi < len(rates) and candles and rates[fi][0] < candles[0].time:
+        fi += 1
+    sec = candles[1].time - candles[0].time if len(candles) > 1 else 0
     res = BacktestResult()
 
+    def settle(until: int, price: float, inclusive: bool):
+        """處理時間 <= until（或 < until）的結算；持倉中就付／收資金費。"""
+        nonlocal fi, cash, trade_funding, total_funding
+        while fi < len(rates) and (rates[fi][0] <= until if inclusive else rates[fi][0] < until):
+            if side != "flat":
+                paid = qty * price * rates[fi][1] / 100 * (1 if side == "long" else -1)
+                cash -= paid
+                trade_funding += paid
+                total_funding += paid
+            fi += 1
+
     def close_at(price: float, t: int, reason: str):
-        nonlocal cash, side, qty, entry
+        nonlocal cash, side, qty, entry, trade_funding
         d = 1 if side == "long" else -1
         pnl = (price - entry) * qty * d
         fee = price * qty * fee_rate
         cash += pnl - fee
         res.trades.append({
             "side": side, "entry_time": entry_time, "exit_time": t, "entry": entry, "exit": price, "qty": qty,
-            "pnl": pnl, "fees": entry_fee + fee, "net": pnl - entry_fee - fee, "exit_reason": reason,
+            "pnl": pnl, "fees": entry_fee + fee, "funding": trade_funding,
+            "net": pnl - entry_fee - fee - trade_funding, "exit_reason": reason,
         })
-        side, qty, entry = "flat", 0.0, 0.0
+        side, qty, entry, trade_funding = "flat", 0.0, 0.0, 0.0
 
     for i, c in enumerate(candles):
+        settle(c.time, c.open, inclusive=True)  # 開盤那一刻的結算先於這根開盤的下單
         want = targets[i - 1] if i > 0 else side  # 前一根收盤的判斷，在這一根開盤執行
         if blocked is not None and want != blocked:
             blocked = None
@@ -103,6 +129,7 @@ def run_backtest(
                 held, reason = side, "take_profit"
                 close_at(max(c.open, tp) if long else min(c.open, tp), c.time, reason)
                 blocked = held
+        settle(c.time + sec, c.close, inclusive=False)  # K 棒中間的結算（下一根開盤那次留給下一根）
         unreal = (c.close - entry) * qty * (1 if side == "long" else -1) if side != "flat" else 0.0
         res.equity.append({"time": c.time, "value": cash + unreal})
 
@@ -127,6 +154,8 @@ def run_backtest(
         "win_rate": len(wins) / len(res.trades) if res.trades else None,
         "profit_factor": gross_win / gross_loss if gross_loss > 0 else None,
         "fees": sum(t["fees"] for t in res.trades),
+        "funding": total_funding,  # 正 = 付出、負 = 收到；沒有提供資金費率時是 0
+        "funding_included": bool(rates),
         "buy_hold_return": candles[-1].close / candles[0].open - 1 if candles else 0,
         "bars": len(candles),
         "from": candles[0].time if candles else None,

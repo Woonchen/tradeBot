@@ -479,3 +479,52 @@ async def test_sweep_api_grid(env, monkeypatch):  # noqa: F811
     assert c.post("/api/strategies/sweep", json={**req, "x": {"param": "allow_short", "values": [1]}}).status_code == 422
     big = {**req, "x": {"param": "fast", "values": list(range(2, 22))}, "y": {"param": "slow", "values": list(range(30, 36))}}
     assert c.post("/api/strategies/sweep", json=big).status_code == 422  # 20 × 6 = 120 > 100
+
+
+# ------------------------------------------------------------------ 資金費率
+H = 3600
+T0 = 1_760_000_000 // 86400 * 86400  # 00:00 UTC：跟 Binance 的結算時間對齊
+
+
+def hourly(n, price=100.0):
+    return [Candle(T0 + i * H, price, price, price, price, 1) for i in range(n)]
+
+
+def test_backtest_funding_long_pays_short_receives():
+    c = hourly(21)
+    seq = ["long"] * 20 + ["flat"]  # 第 0 根判斷 long → 第 1 根（01:00）開盤進場，持有到最後
+    funding = [(T0, 0.05), (T0 + 8 * H, 0.01), (T0 + 16 * H, -0.02)]  # T0 那次在進場前，不算
+    r = run_backtest(Flip(seq), c, market="futures", size_value=1000, fee_rate=0.0, funding=funding)
+    (t,) = r.trades
+    # 部位價值 1000：08:00 多單付 0.1、16:00 費率為負收 0.2
+    assert t["funding"] == pytest.approx(0.1 - 0.2) and r.stats["funding"] == pytest.approx(-0.1)
+    assert t["net"] == pytest.approx(0.1) and r.stats["final_equity"] == pytest.approx(10_000 + 0.1)
+    assert r.stats["funding_included"] is True
+
+    s = run_backtest(Flip(["short"] * 20 + ["flat"]), c, market="futures", size_value=1000, fee_rate=0.0, funding=funding)
+    assert s.trades[0]["funding"] == pytest.approx(-0.1 + 0.2)  # 空單：正費率收、負費率付
+
+    spot = run_backtest(Flip(seq), c, market="spot", size_value=1000, fee_rate=0.0, funding=funding)
+    assert spot.stats["funding"] == 0 and spot.stats["funding_included"] is False  # 現貨沒有資金費
+
+
+def test_backtest_funding_settlement_before_orders():
+    c = hourly(12)
+    # 07:00 判斷 long → 08:00 開盤進場：08:00 的結算在下單之前，不用付
+    # 判斷持續到 10:00 收盤轉 flat → 11:00 開盤平倉
+    seq = ["flat"] * 7 + ["long"] * 3 + ["flat"] * 2
+    r = run_backtest(Flip(seq), c, market="futures", size_value=1000, fee_rate=0.0,
+                     funding=[(T0 + 8 * H, 0.01), (T0 + 11 * H, 0.03)])  # 11:00 剛好平倉那一刻要付
+    (t,) = r.trades
+    assert (t["entry_time"], t["exit_time"]) == (T0 + 8 * H, T0 + 11 * H)
+    assert t["funding"] == pytest.approx(0.3)
+
+
+def test_backtest_funding_inside_daily_bar_uses_close():
+    D = 86400
+    c = [Candle(T0 + i * D, 100, 100, 100, 100 + 10 * i, 1) for i in range(4)]  # 收盤 100,110,120,130
+    seq = ["long", "long", "long", "flat"]
+    r = run_backtest(Flip(seq), c, market="futures", size_mode="fixed", size_value=100, fee_rate=0.0,
+                     funding=[(T0 + D + 8 * H, 0.01)])  # 第 1 根日 K 中間的結算
+    (t,) = r.trades
+    assert t["funding"] == pytest.approx(t["qty"] * 110 * 0.0001)  # 用那根的收盤價 110 近似

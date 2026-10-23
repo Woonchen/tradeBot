@@ -134,4 +134,12 @@ async def test_sentiment_api_and_backtest_attach(env, monkeypatch):  # noqa: F81
     assert c.post("/api/strategies/backtest", json=plain).status_code == 200
     sweep = {**plain, "x": {"param": "length", "values": [10, 20]}}
     assert c.post("/api/strategies/sweep", json=sweep).status_code == 200
+
+    # 合約回測自動扣歷史資金費率；現貨不扣
+    hold = {**body, "strategy": "ma_trend", "params": {"length": 2}, "interval": "1h", "bars": 300}
+    fut = c.post("/api/strategies/backtest", json=hold).json()["stats"]
+    spot = c.post("/api/strategies/backtest", json={**hold, "market": "spot"}).json()["stats"]
+    assert fut["funding_included"] is True and spot["funding_included"] is False and spot["funding"] == 0
+    cell = c.post("/api/strategies/sweep", json={**hold, "x": {"param": "length", "values": [2]}}).json()["cells"][0][0]
+    assert cell["recent"]["funding_included"] is True
     await svc.close()

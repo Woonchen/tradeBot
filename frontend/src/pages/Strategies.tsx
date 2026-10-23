@@ -113,6 +113,9 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
         {z.size_mode === "fixed" ? `每筆 ${fmtNum(z.size_value)} USDT 保證金` : `每筆用可用資金 ${z.size_value}%`}
         {z.market === "futures" && ` × ${z.leverage} 倍槓桿`}{protectionText(z.stop_loss_pct, z.take_profit_pct)}，起始 {fmtNum(z.start_equity)} USDT。
         {result.warmup > 0 && ` 另外多抓前面 ${result.warmup} 根讓指標穩定，不計入結果；起點當下若已在部位內，要等判斷改變才進場（跟實際啟用一樣）。`}
+        {z.market === "futures" && (s.funding_included
+          ? " 已照實際持倉扣收 Binance 歷史資金費率（每 8 小時結算）。"
+          : " ⚠ 沒有扣資金費率（拿不到歷史資料），合約長時間持倉的結果會偏樂觀。")}
       </p>
       {result.earlier && <PeriodCompare recent={s} earlier={result.earlier} />}
       {compareRequested && !result.earlier && <p className="muted" style={{ margin: 0 }}>歷史資料不夠長，無法驗證更早的同長度期間。</p>}
@@ -121,7 +124,9 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
         {tile("最大回撤", fmtPct(s.max_drawdown))}
         {tile("交易次數", String(s.trades), "", `勝率 ${fmtPct(s.win_rate)}`)}
         {tile("獲利因子", s.profit_factor === null ? "—" : fmtNum(s.profit_factor), "", "總獲利 ÷ 總虧損，>1 才有賺")}
-        {tile("手續費", fmtNum(s.fees), "", `同期幣價 ${fmtSigned(s.buy_hold_return * 100)}%`)}
+        {tile("手續費", fmtNum(s.fees), "", s.funding_included
+          ? `資金費 ${s.funding >= 0 ? "付出" : "收到"} ${fmtNum(Math.abs(s.funding))} · 同期幣價 ${fmtSigned(s.buy_hold_return * 100)}%`
+          : `同期幣價 ${fmtSigned(s.buy_hold_return * 100)}%`)}
       </div>
       <div className="card">
         <h2>{result.symbol} 回測（{s.bars} 根 K 棒）</h2>
@@ -137,13 +142,14 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
         {result.trades.length === 0 ? <div className="empty">這段期間沒有交易</div> : (
           <div className="table-wrap" style={{ maxHeight: 360, overflowY: "auto" }}>
             <table>
-              <thead><tr><th>方向</th><th>進場</th><th className="num">進場價</th><th>出場</th><th className="num">出場價</th><th className="num">損益</th><th className="num">手續費</th><th className="num">淨損益</th><th>出場原因</th></tr></thead>
+              <thead><tr><th>方向</th><th>進場</th><th className="num">進場價</th><th>出場</th><th className="num">出場價</th><th className="num">損益</th><th className="num">手續費</th>{s.funding_included && <th className="num">資金費</th>}<th className="num">淨損益</th><th>出場原因</th></tr></thead>
               <tbody>{[...result.trades].reverse().map((t, i) => (
                 <tr key={i}>
                   <td><span className={`badge ${t.side}`}>{TARGET_ZH[t.side]}</span></td>
                   <td className="muted">{fmtTime(new Date(t.entry_time * 1000).toISOString())}</td><td className="num">{fmtPrice(t.entry)}</td>
                   <td className="muted">{fmtTime(new Date(t.exit_time * 1000).toISOString())}</td><td className="num">{fmtPrice(t.exit)}</td>
                   <td className={`num ${pnlClass(t.pnl)}`}>{fmtSigned(t.pnl)}</td><td className="num">{fmtNum(t.fees)}</td>
+                  {s.funding_included && <td className="num" title="正 = 付出、負 = 收到">{fmtSigned(t.funding)}</td>}
                   <td className={`num ${pnlClass(t.net)}`}>{fmtSigned(t.net)}</td>
                   <td className={t.exit_reason === "stop" ? "down" : t.exit_reason === "take_profit" ? "up" : "muted"}>{EXIT_ZH[t.exit_reason] ?? "—"}</td>
                 </tr>

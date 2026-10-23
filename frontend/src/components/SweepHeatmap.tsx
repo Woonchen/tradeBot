@@ -110,6 +110,7 @@ function Detail({ data, at }: { data: SweepResult; at: [number, number] }) {
       <td className="num">{fmtPct(s.win_rate)}</td>
       <td className="num">{s.trades}</td>
       <td className="num">{fmtPct(s.max_drawdown)}</td>
+      <td className="num">{s.funding_included ? fmtSigned(s.funding) : "—"}</td>
       <td className="num">{fmtSigned(s.buy_hold_return * 100, 1)}%</td>
     </tr>
   );
@@ -118,7 +119,7 @@ function Detail({ data, at }: { data: SweepResult; at: [number, number] }) {
       <strong style={{ fontSize: 13 }}>{label}</strong>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>期間</th><th className="num">報酬</th><th className="num">獲利因子</th><th className="num">勝率</th><th className="num">交易</th><th className="num">最大回撤</th><th className="num">同期幣價</th></tr></thead>
+          <thead><tr><th>期間</th><th className="num">報酬</th><th className="num">獲利因子</th><th className="num">勝率</th><th className="num">交易</th><th className="num">最大回撤</th><th className="num" title="正 = 付出、負 = 收到">資金費</th><th className="num">同期幣價</th></tr></thead>
           <tbody>{row("更早期間", c.earlier)}{row("最近期間", c.recent)}</tbody>
         </table>
       </div>

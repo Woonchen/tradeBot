@@ -119,11 +119,15 @@ export interface PerformanceReport {
 export interface BacktestTrade {
   side: "long" | "short"; entry_time: number; exit_time: number; entry: number; exit: number; qty: number;
   pnl: number; fees: number; net: number; exit_reason: "signal" | "stop" | "take_profit" | "end";
+  /** 這筆付掉的資金費（正 = 付、負 = 收），淨損益已扣掉 */
+  funding: number;
 }
 export interface BacktestStats {
   start_equity: number; final_equity: number; total_return: number; max_drawdown: number; trades: number;
   win_rate: number | null; profit_factor: number | null; fees: number; buy_hold_return: number; bars: number;
   from: number | null; to: number | null;
+  /** 資金費合計（正 = 付出）；funding_included 為 false 時沒有扣（現貨或拿不到資料） */
+  funding: number; funding_included: boolean;
 }
 export interface BacktestSizing {
   market: Market; size_mode: "fixed" | "percent"; size_value: number; leverage: number; start_equity: number;
@@ -143,7 +147,7 @@ export interface SentimentReport {
 }
 export interface SweepStats {
   total_return: number; profit_factor: number | null; max_drawdown: number; trades: number; win_rate: number | null;
-  buy_hold_return: number; from: number | null; to: number | null;
+  buy_hold_return: number; from: number | null; to: number | null; funding: number; funding_included: boolean;
 }
 /** 參數掃描的一格：參數衝突時只有 error；沒有更早期間時 earlier 是 null */
 export interface SweepCell { recent?: SweepStats; earlier?: SweepStats | null; error?: string }

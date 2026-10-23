@@ -233,6 +233,14 @@ async def _attach(request: Request, strategies: list, symbol: str) -> None:
         st.ext = first.ext
 
 
+async def _funding(request: Request, market: str, symbol: str) -> dict:
+    """合約回測要扣的歷史資金費率；現貨或拿不到資料時不扣（結果會標示 funding_included）。"""
+    sentiment = getattr(request.app.state, "sentiment", None)
+    if market != "futures" or sentiment is None:
+        return {}
+    return {"funding": await sentiment.funding_series(symbol)}
+
+
 @router.post("/backtest")
 async def backtest(
     body: BacktestBody, request: Request, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor),
@@ -250,7 +258,7 @@ async def backtest(
     if len(recent) - recent_warm < 50:
         raise HTTPException(422, "歷史 K 線不足")
     sizing = _sizing(body, bot)
-    follow = {"follow_initial": body.enter_on_enable}
+    follow = {"follow_initial": body.enter_on_enable, **await _funding(request, body.market, body.symbol)}
     res = run_backtest(strat, recent, warmup=recent_warm, **sizing, **follow)
     earlier = None
     if body.compare_earlier and len(candles) >= 2 * n + warm:
@@ -287,7 +295,8 @@ class SweepBody(BacktestBody):
 
 
 def _brief(st: dict) -> dict:
-    keys = ("total_return", "profit_factor", "max_drawdown", "trades", "win_rate", "buy_hold_return", "from", "to")
+    keys = ("total_return", "profit_factor", "max_drawdown", "trades", "win_rate", "buy_hold_return", "from", "to",
+            "funding", "funding_included")
     return {k: st[k] for k in keys}
 
 
@@ -337,7 +346,8 @@ async def sweep(
         raise HTTPException(429, "已經有一個參數掃描在跑，請等它完成")
     async with _sweep_lock:
         bot = await load_bot_settings(s)
-        sizing, follow = _sizing(body, bot), {"follow_initial": body.enter_on_enable}
+        sizing = _sizing(body, bot)
+        follow = {"follow_initial": body.enter_on_enable, **await _funding(request, body.market, body.symbol)}
         n, warm = body.bars, max(st.warmup for st in valid)
         candles = await fetch_candles(ex.adapters[body.market], symbol, body.interval, n * (2 if body.compare_earlier else 1) + warm)
         recent = candles[-(n + warm):]
