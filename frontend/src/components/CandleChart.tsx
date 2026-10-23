@@ -33,7 +33,7 @@ const loadEnabled = (): string[] => {
 };
 
 /** 副圖每格佔整張圖的高度比例（圖表高度會跟著副圖數量加高，見 styles.css 的 .panes-N） */
-const PANE_H = [0, 0.17, 0.15, 0.135];
+const PANE_H = [0, 0.17, 0.15, 0.135, 0.12];
 
 const fmtVal = (v: number) => `${v < 0 ? "−" : ""}${fmtPrice(Math.abs(v))}`;
 const fmtVol = (v: number) => new Intl.NumberFormat("zh-TW", { notation: "compact", maximumFractionDigits: 2 }).format(v);

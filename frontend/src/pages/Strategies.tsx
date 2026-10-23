@@ -8,6 +8,7 @@ import { BacktestChart } from "../components/BacktestChart";
 import { RuleBuilder, rulesForMarket, type Rules } from "../components/RuleBuilder";
 import { EquityChart } from "../components/EquityChart";
 import { METRICS, SweepHeatmap, type Metric } from "../components/SweepHeatmap";
+import { SymbolSelect } from "../components/SymbolSelect";
 import { fmtNum, fmtPct, fmtPrice, fmtSigned, fmtTime, INTERVAL_SEC, pnlClass } from "../format";
 
 const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
@@ -306,7 +307,7 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
             {catalog.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
         </label>
-        <label className="field">交易對<input value={d.symbol} onChange={(e) => set("symbol", e.target.value.toUpperCase())} placeholder="BTCUSDT" /></label>
+        <label className="field">交易對<SymbolSelect value={d.symbol} onChange={(v) => set("symbol", v)} width={200} /></label>
         <label className="field">市場
           <select value={d.market} onChange={(e) => set("market", e.target.value as Market)}>
             <option value="futures">合約</option><option value="spot">現貨（不做空）</option>

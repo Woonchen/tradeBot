@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
-import { api, qs, type BotSettings, type Market, type Position, type Trade } from "../api/client";
+import { api, qs, type Market, type Position, type Trade } from "../api/client";
 import { CandleChart, INTERVAL_SECONDS } from "../components/CandleChart";
+import { SymbolSelect, toTicker } from "../components/SymbolSelect";
 import { fmtPrice, fmtQty, fmtSigned, fmtTime, INTENT_ZH, pnlClass } from "../format";
 
 function TradesTable({ trades }: { trades: Trade[] }) {
@@ -32,9 +33,7 @@ function TradesTable({ trades }: { trades: Trade[] }) {
 
 export function ChartPage() {
   const positions = useQuery({ queryKey: ["positions", "open"], queryFn: () => api<Position[]>("/api/positions") });
-  const bot = useQuery({ queryKey: ["bot"], queryFn: () => api<BotSettings>("/api/bot") });
   const [symbol, setSymbol] = useState("BTCUSDT");
-  const [draft, setDraft] = useState("BTCUSDT");
   const [market, setMarket] = useState<Market>("futures");
   const [interval, setInterval] = useState("15m");
   const [picked, setPicked] = useState<Trade[] | null>(null);
@@ -45,8 +44,7 @@ export function ChartPage() {
     if (initialised || !positions.data) return;
     const p = positions.data[0];
     if (p) {
-      setSymbol(p.symbol);
-      setDraft(p.symbol);
+      setSymbol(toTicker(p.symbol));
       setMarket(p.market);
     }
     setInitialised(true);
@@ -64,20 +62,13 @@ export function ChartPage() {
     enabled: !!resolved,
   });
 
-  const suggestions = [
-    ...new Set([...(positions.data ?? []).map((p) => p.symbol), ...(bot.data?.symbols ?? []), "BTCUSDT", "ETHUSDT", "SOLUSDT"]),
-  ];
   const onSelectBar = useCallback((t: Trade[]) => setPicked(t), []);
 
   return (
     <>
       <h1>K 線與買賣點</h1>
       <div className="toolbar">
-        <form onSubmit={(e) => { e.preventDefault(); setSymbol(draft.trim()); setPicked(null); }} style={{ display: "flex", gap: 8 }}>
-          <input list="symbols" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="BTCUSDT" style={{ width: 160 }} />
-          <datalist id="symbols">{suggestions.map((s) => <option key={s} value={s} />)}</datalist>
-          <button className="btn" type="submit">切換</button>
-        </form>
+        <SymbolSelect value={symbol} onChange={(s) => { setSymbol(s); setPicked(null); }} />
         <div className="seg">
           {(["spot", "futures"] as Market[]).map((m) => (
             <button key={m} className={market === m ? "on" : ""} onClick={() => { setMarket(m); setPicked(null); }}>

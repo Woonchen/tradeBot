@@ -62,6 +62,33 @@ export function rsi(closes: number[], n = 14): Series {
   return out;
 }
 
+/**
+ * KD 隨機指標（台灣看盤軟體常用的算法）：
+ * RSV = (收盤 − n 根最低) ÷ (n 根最高 − n 根最低) × 100；K = ⅔·前K + ⅓·RSV；D = ⅔·前D + ⅓·K；K、D 起始 50。
+ */
+export function kd(candles: Candle[], n = 9): { k: Series; d: Series } {
+  const k: Series = [], d: Series = [];
+  let pk = 50, pd = 50;
+  for (let i = 0; i < candles.length; i++) {
+    if (i < n - 1) {
+      k.push(null);
+      d.push(null);
+      continue;
+    }
+    let hi = -Infinity, lo = Infinity;
+    for (let j = i - n + 1; j <= i; j++) {
+      hi = Math.max(hi, candles[j].high);
+      lo = Math.min(lo, candles[j].low);
+    }
+    const rsv = hi === lo ? 50 : ((candles[i].close - lo) / (hi - lo)) * 100; // 完全沒波動時當作中間
+    pk = (pk * 2) / 3 + rsv / 3;
+    pd = (pd * 2) / 3 + pk / 3;
+    k.push(pk);
+    d.push(pd);
+  }
+  return { k, d };
+}
+
 function stdev(values: number[], mean: Series, n: number): Series {
   return mean.map((m, i) => {
     if (m === null) return null;
@@ -140,6 +167,13 @@ export const INDICATORS: IndicatorDef[] = [
   {
     id: "rsi", label: "RSI", pane: "sub", levels: [70, 30],
     build: (k, c) => [line("RSI14", c.series3, k, rsi(k.map((x) => x.close), 14))],
+  },
+  {
+    id: "kd", label: "KD", pane: "sub", levels: [80, 20],
+    build: (k, c) => {
+      const { k: kk, d } = kd(k, 9);
+      return [line("K9", c.series1, k, kk), line("D9", c.series2, k, d)];
+    },
   },
   {
     id: "macd", label: "MACD", pane: "sub",
