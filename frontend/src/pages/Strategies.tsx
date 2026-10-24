@@ -7,6 +7,7 @@ import {
 import { BacktestChart } from "../components/BacktestChart";
 import { RuleBuilder, rulesForMarket, type Rules } from "../components/RuleBuilder";
 import { EquityChart } from "../components/EquityChart";
+import { PortfolioBacktest } from "../components/PortfolioBacktest";
 import { METRICS, SweepHeatmap, type Metric } from "../components/SweepHeatmap";
 import { SymbolSelect } from "../components/SymbolSelect";
 import { fmtNum, fmtPct, fmtPrice, fmtSigned, fmtTime, INTERVAL_SEC, pnlClass, SIZE_MODES, sizeLabel, sizeText } from "../format";
@@ -660,6 +661,7 @@ export function Strategies() {
         </p>
         {toggle.isError && <p className="error-text">{(toggle.error as Error).message}</p>}
       </div>
+      <PortfolioBacktest configs={configs.data ?? []} />
       <Performance labelOf={labelOf} />
     </>
   );

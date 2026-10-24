@@ -267,3 +267,6 @@ tr.detail-row > td { padding-top: 0; font-size: 12px; white-space: normal; }
   /* 表格比螢幕寬（可左右捲）時，條件那一列固定在可見範圍內換行，不用捲動才看得到 */
   .cond-groups { position: sticky; left: 10px; max-width: calc(100vw - 110px); }
 }
+
+/* 投資組合回測：勾選策略 */
+.pf-picks { display: flex; flex-wrap: wrap; column-gap: 18px; row-gap: 4px; }

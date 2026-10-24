@@ -188,3 +188,15 @@ export interface StrategyCheck {
   bar_time: number | null;
   groups: Partial<Record<"long_entry" | "long_exit" | "short_entry" | "short_exit", { logic: "and" | "or"; met: boolean; conditions: ConditionCheck[] }>>;
 }
+
+/** 投資組合回測（POST /api/strategies/portfolio-backtest） */
+export interface PortfolioResult {
+  stats: {
+    start_equity: number; final_equity: number; total_return: number; cagr: number | null; max_drawdown: number;
+    trades: number; skipped: Record<string, number>; max_concurrent: number; avg_exposure: number;
+    stopped_at: number | null; from: number | null; to: number | null;
+  };
+  equity: { time: number; value: number }[];
+  legs: { id: number; name: string; symbol: string; trades: number; net: number; win_rate: number | null }[];
+  rules: { max_open_positions: number; max_drawdown_pct: number };
+}

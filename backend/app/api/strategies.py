@@ -8,13 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..engine.executor import Executor
-from ..engine.risk import ORDER_FIELDS, load_bot_settings
+from ..engine.risk import ORDER_FIELDS, load_bot_settings, order_rules
 from ..exchange.base import UnknownSymbol, normalize_ticker
 from ..engine import shadow
 from ..engine.performance import OwnerStats, RoundTrip, attribute, names_from_signals, owner_label
 from ..models import Position, ShadowTrade, Signal, StrategyConfig, Trade, utcnow
 from ..strategies import INTERVAL_SECONDS, REGISTRY, build_strategy
 from ..strategies.backtest import run_backtest
+from ..strategies.portfolio import Leg, run_portfolio
 from ..strategies.history import fetch_candles
 from .deps import get_executor, require_user
 
@@ -331,6 +332,57 @@ async def backtest(
         # 要求了但歷史不夠時是 None，前端會說明
         "earlier": earlier,
     }
+
+
+# ---------------------------------------------------------------------------- 投資組合回測
+class PortfolioBody(BaseModel):
+    ids: list[int] | None = None  # 沒給 = 所有啟用中、實際下單的策略
+    bars: int = Field(3000, ge=100, le=20000)  # 每個策略各自週期的 K 棒數
+    start_equity: float = Field(10_000, gt=0)
+    breaker: bool = True  # 照「設定」頁的回撤熔斷
+
+
+_portfolio_lock = asyncio.Lock()
+
+
+@router.post("/portfolio-backtest")
+async def portfolio_backtest(
+    body: PortfolioBody, request: Request, s: AsyncSession = Depends(get_session), ex: Executor = Depends(get_executor),
+):
+    """多個策略共用一個帳戶一起回測：部位大小照各自的下單規則、以當下的共用權益計算（見 strategies/portfolio.py）。"""
+    q = select(StrategyConfig).order_by(StrategyConfig.id)
+    q = q.where(StrategyConfig.id.in_(body.ids)) if body.ids else q.where(
+        StrategyConfig.enabled.is_(True), StrategyConfig.mode == "live")
+    configs = (await s.scalars(q)).all()
+    if not configs:
+        raise HTTPException(422, "沒有可以回測的策略")
+    if len(configs) > 20:
+        raise HTTPException(422, "一次最多 20 個策略")
+    bot = await load_bot_settings(s)
+    async with _portfolio_lock:
+        legs = []
+        for cfg in configs:
+            strat = build_strategy(cfg.strategy, cfg.params)
+            await _attach(request, [strat], cfg.symbol)
+            symbol = await ex.market_data[cfg.market].resolve_symbol(cfg.symbol)
+            candles = await fetch_candles(ex.market_data[cfg.market], symbol, cfg.interval, body.bars + strat.warmup)
+            warm = max(0, len(candles) - body.bars)
+            if len(candles) - warm < 50:
+                raise HTTPException(422, f"「{cfg.name}」歷史 K 線不足")
+            rules = order_rules(bot, cfg)
+            # 每筆部位價值固定 1 USDT：得到「每 1 USDT」的淨損益，部位大小交給 run_portfolio 依共用帳戶計算
+            res = run_backtest(
+                strat, candles, market=cfg.market, size_mode="fixed", size_value=1, leverage=1, start_equity=1e9,
+                warmup=warm, stop_loss_pct=rules.stop_loss_pct, take_profit_pct=rules.take_profit_pct,
+                follow_initial=cfg.enter_on_enable, **await _funding(request, cfg.market, cfg.symbol),
+            )
+            legs.append(Leg(cfg.id, cfg.name, cfg.symbol, cfg.market, rules.size_mode, rules.size_value,
+                            rules.leverage, candles[warm:], res.trades))
+        out = run_portfolio(legs, start_equity=body.start_equity, max_open=bot.max_open_positions,
+                            max_drawdown_pct=bot.max_drawdown_pct if body.breaker else 0)
+    return {"stats": out.stats, "equity": out.equity, "legs": out.legs,
+            "rules": {"max_open_positions": bot.max_open_positions,
+                      "max_drawdown_pct": bot.max_drawdown_pct if body.breaker else 0}}
 
 
 # ---------------------------------------------------------------------------- 參數掃描
