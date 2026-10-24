@@ -18,7 +18,8 @@ log = logging.getLogger(__name__)
 
 SIDE_ZH = {"buy": "買入", "sell": "賣出"}
 SOURCE_ZH = {"tradingview": "TradingView", "manual": "手動", "protection": "停損停利", "strategy": "策略"}
-INTENT_ZH = {"open_long": "開多", "close_long": "平多", "open_short": "開空", "close_short": "平空"}
+INTENT_ZH = {"open_long": "開多", "close_long": "平多", "open_short": "開空", "close_short": "平空",
+             "add_long": "加碼多", "add_short": "加碼空"}
 
 
 async def get_open_position(s: AsyncSession, symbol: str, market: str) -> Position | None:
@@ -153,6 +154,14 @@ class Executor:
 
         pos = await get_open_position(s, symbol, sig.market)
         current = pos.side if pos else "flat"
+        if sig.action == "add":  # 加碼：對同方向的既有部位加一份
+            if pos is None or pos.side != sig.target:
+                raise Reject(f"沒有{sig.target}部位可以加碼（目前 {current}）")
+            if blocked:
+                raise Reject(blocked)
+            await check_open_risk(s, cfg, closing_one=False, adding=True)
+            await self._add_position(s, sig, adapter, cfg, symbol, pos)
+            return
         if current == sig.target:
             raise Reject(f"目前部位已經是 {current}，不需動作")
 
@@ -223,15 +232,16 @@ class Executor:
             intent=f"close_{pos.side}", reduce_only=adapter.market == "futures", leverage=pos.leverage,
         )
 
-    async def _open_position(self, s: AsyncSession, sig: Signal, adapter: ExchangeAdapter, bot, symbol: str):
-        # 策略送來的訊號用策略自己的下單規則（沒填的沿用設定頁）
+    async def _strategy_of(self, s: AsyncSession, sig: Signal) -> StrategyConfig | None:
         strategy_id = (sig.raw_payload or {}).get("strategy_id") if sig.source == "strategy" else None
-        strategy = await s.get(StrategyConfig, strategy_id) if isinstance(strategy_id, int) else None
-        cfg = order_rules(bot, strategy)
-        lev = cfg.leverage if adapter.market == "futures" else 1
+        return await s.get(StrategyConfig, strategy_id) if isinstance(strategy_id, int) else None
+
+    async def _size(self, adapter: ExchangeAdapter, cfg, lev: int, symbol: str, frac: float = 1.0) -> tuple[float, float]:
+        """依下單規則算 (價格, 數量)；frac = 這次是首筆的幾份（加碼用）。"""
         price = await adapter.fetch_price(symbol)
         wallet = await adapter.fetch_wallet()
-        margin, raw_qty = compute_order_size(cfg.size_mode, cfg.size_value, lev, wallet.free_usdt, price, wallet.equity_usdt)
+        value = cfg.size_value * frac
+        margin, raw_qty = compute_order_size(cfg.size_mode, value, lev, wallet.free_usdt, price, wallet.equity_usdt)
         if cfg.size_mode == "equity" and margin > wallet.free_usdt * 0.99:
             # 權益 % 加總接近 100% 時，最後一個可能差一點點（手續費、未實現獲利不算可用）：用剩下的進場，不要整筆錯過
             margin = wallet.free_usdt * 0.99
@@ -241,6 +251,37 @@ class Executor:
         qty = adapter.amount_to_precision(symbol, raw_qty)
         if qty * price < adapter.min_notional(symbol):
             raise Reject(f"下單金額 {qty * price:.2f} 低於交易所最小值 {adapter.min_notional(symbol)}")
+        return price, qty
+
+    async def _add_position(self, s: AsyncSession, sig: Signal, adapter: ExchangeAdapter, bot, symbol: str, pos: Position):
+        strategy = await self._strategy_of(s, sig)
+        cfg = order_rules(bot, strategy)
+        frac = (strategy.pyramid_frac if strategy and strategy.pyramid_frac else 0.5)
+        lev = pos.leverage if adapter.market == "futures" else 1  # 跟原本的部位用同樣的槓桿
+        _, qty = await self._size(adapter, cfg, lev, symbol, frac)
+        side = "buy" if pos.side == "long" else "sell"
+        filled = await self._place(s, sig, adapter, symbol, side, qty, intent=f"add_{pos.side}", leverage=lev)
+        if not filled:
+            return
+        pos = await get_open_position(s, symbol, adapter.market)
+        if pos and (pos.stop_price or pos.take_profit_price):
+            # 平均成本變了、數量變多：停損停利以新的平均成本重算，交易所上的保護單換成整個部位的數量
+            stop, tp = protection_prices(pos.side, pos.entry_price, cfg.stop_loss_pct, cfg.take_profit_pct)
+            await adapter.cancel_protection(symbol)
+            pos.stop_price, pos.take_profit_price = stop, tp
+            pos.native_protection = await adapter.place_protection(symbol, pos.side, pos.qty, stop, tp)
+            await s.commit()
+            await self.bus.emit(
+                "position_update", pos.to_dict(), category="order", signal_id=sig.id,
+                message=f"{symbol} 加碼後重設保護：停損 {stop and round(stop, 6)} / 停利 {tp and round(tp, 6)}",
+            )
+
+    async def _open_position(self, s: AsyncSession, sig: Signal, adapter: ExchangeAdapter, bot, symbol: str):
+        # 策略送來的訊號用策略自己的下單規則（沒填的沿用設定頁）
+        strategy = await self._strategy_of(s, sig)
+        cfg = order_rules(bot, strategy)
+        lev = cfg.leverage if adapter.market == "futures" else 1
+        price, qty = await self._size(adapter, cfg, lev, symbol)
         if adapter.market == "futures":
             await adapter.prepare_futures(symbol, lev, cfg.margin_mode)
 
@@ -357,6 +398,10 @@ class Executor:
                 s.add(pos)
             pos.side, pos.qty, pos.entry_price, pos.mark_price = new.side, new.qty, new.entry, price
             pos.realized_pnl = (pos.realized_pnl or 0) + realized
+            if order.intent.startswith("open"):
+                pos.adds, pos.last_fill_price = 0, price
+            elif order.intent.startswith("add"):
+                pos.adds, pos.last_fill_price = (pos.adds or 0) + 1, price
         await s.flush()  # 新部位要先寫入才有 id
         owner = closed or pos  # 平倉（含一次成交就反手）算給被平掉的部位
         trade.position_id = owner.id if owner else None

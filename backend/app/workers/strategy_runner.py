@@ -14,6 +14,7 @@ from ..exchange.base import UnknownSymbol
 from ..models import ShadowTrade, Signal, StrategyConfig, Trade, utcnow
 from ..strategies import INTERVAL_SECONDS, build_strategy, for_market
 from ..strategies.history import fetch_candles
+from ..strategies.indicators import atr
 
 log = logging.getLogger(__name__)
 SIDE_ZH = {"long": "多", "short": "空"}
@@ -127,6 +128,9 @@ class StrategyRunner:
                 return
         else:
             await self.bus.emit("strategy", cfg.to_dict())
+            if target == prev:
+                await self._maybe_add(cfg, symbol, candles, target)
+                return
         if target != prev:
             if target == "flat":
                 # 策略啟用時不會跟著進場，之後判斷轉回空手時帳上可能根本沒有部位，送出去也只會被拒絕
@@ -145,6 +149,34 @@ class StrategyRunner:
                      "bar_time": bar.time, "from": prev, "to": target, "params": cfg.params},
                 dedupe_key=f"strategy:{cfg.id}:{bar.time}:{target}",
             )
+
+    async def _maybe_add(self, cfg: StrategyConfig, symbol: str, candles, target: str):
+        """加碼：判斷沒變、這個策略的部位往有利方向比最後一次成交多走 pyramid_atr 個 ATR，就加一份。"""
+        if cfg.pyramid_atr is None or target == "flat":
+            return
+        async with self.ex.sf() as s:
+            pos = await get_open_position(s, symbol, cfg.market)
+            if pos is None or pos.side != target or (pos.adds or 0) >= (cfg.pyramid_max or 0):
+                return
+            if owner_of(await opening_signal(s, pos.id)) != ("strategy", cfg.id):
+                return
+            ref = pos.last_fill_price or pos.entry_price
+            adds = pos.adds or 0
+        need = pyramid_due(candles, target, ref, cfg.pyramid_atr)
+        if need is None:
+            return
+        bar = candles[-1]
+        await self.bus.emit(
+            "strategy", cfg.to_dict(), category="signal",
+            message=f"策略「{cfg.name}」收盤 {bar.close:g} 比上次成交 {ref:g} 多走 {need:.1f} 個 ATR，加碼第 {adds + 1} 次",
+        )
+        await self.ex.submit(
+            source="strategy", strategy=cfg.name, ticker=cfg.symbol, market=cfg.market, action="add", target=target,
+            price=bar.close,
+            raw={"strategy_id": cfg.id, "strategy": cfg.strategy, "interval": cfg.interval, "bar_time": bar.time,
+                 "from": target, "to": target, "add": adds + 1},
+            dedupe_key=f"strategy:{cfg.id}:{bar.time}:add",
+        )
 
     async def _shadow(self, cfg: StrategyConfig, symbol: str, candles, target: str, prev: str | None, sec: int):
         """影子模式：判斷流程跟實際下單一樣，只是把交易記成虛擬交易（見 engine/shadow.py）。"""
@@ -176,6 +208,11 @@ class StrategyRunner:
                     new = await shadow.open_trade(s, cfg, bot, symbol, target, bar, sec)
                     if new:
                         done.append(f"開{SIDE_ZH[target]} {new.qty:.6g} @ {bar.close:g}")
+            elif (t and not first and cfg.pyramid_atr is not None and t.side == target and t.adds < (cfg.pyramid_max or 0)
+                  and pyramid_due(candles, target, t.last_fill_price or t.entry_price, cfg.pyramid_atr) is not None):
+                added = await shadow.add_to(s, cfg, bot, t, bar)
+                if added:
+                    done.append(f"加碼第 {t.adds} 次 {added:.6g} @ {bar.close:g}，平均成本 {t.entry_price:g}")
             await s.commit()
 
         head = f"影子策略「{cfg.name}」"
@@ -281,3 +318,12 @@ async def holding_on_exchange(adapter, symbol: str) -> bool:
     wallet = await adapter.fetch_wallet()
     base = adapter.base_asset(symbol)
     return any(a.asset == base and a.usdt_value >= adapter.min_notional(symbol) for a in wallet.assets)
+
+
+def pyramid_due(candles, side: str, ref: float, k: float) -> float | None:
+    """最後一根收盤比 ref 往有利方向多走了幾個 ATR(14)；達到 k 才回傳，否則 None。"""
+    a = atr([c.high for c in candles], [c.low for c in candles], [c.close for c in candles], 14)[-1]
+    if not a:
+        return None
+    moved = (candles[-1].close - ref) * (1 if side == "long" else -1) / a
+    return moved if moved >= k else None

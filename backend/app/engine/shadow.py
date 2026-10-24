@@ -89,7 +89,29 @@ async def open_trade(
     t = ShadowTrade(
         strategy_id=cfg.id, symbol=symbol, market=cfg.market, side=side, qty=qty, entry_price=bar.close,
         entry_bar=bar.time, entry_time=_at(bar.time + sec), entry_fee=bar.close * qty * fee_rate(cfg.market),
-        stop_price=stop, take_profit_price=tp, funding=0.0,
+        stop_price=stop, take_profit_price=tp, funding=0.0, adds=0, last_fill_price=bar.close,
     )
     s.add(t)
     return t
+
+
+async def add_to(s: AsyncSession, cfg: StrategyConfig, bot: BotSettings, t: ShadowTrade, bar: Candle) -> float:
+    """影子交易加碼：首筆規則 × pyramid_frac，以虛擬帳戶當下權益（含這筆的未實現損益）計算。回傳加了多少數量。"""
+    rules = order_rules(bot, cfg)
+    lev = rules.leverage if cfg.market == "futures" else 1
+    d = 1 if t.side == "long" else -1
+    eq = await virtual_equity(s, cfg.id) + (bar.close - t.entry_price) * t.qty * d - t.entry_fee - (t.funding or 0)
+    _, qty = compute_order_size(rules.size_mode, rules.size_value * (cfg.pyramid_frac or 0.5), lev, eq, bar.close, eq)
+    if qty <= 0:
+        return 0.0
+    t.entry_price = (t.entry_price * t.qty + bar.close * qty) / (t.qty + qty)
+    t.qty += qty
+    t.entry_fee += bar.close * qty * fee_rate(cfg.market)
+    t.adds = (t.adds or 0) + 1
+    t.last_fill_price = bar.close
+    # 停損停利改用新的平均成本：只檢查加碼之後的 K 棒（之前的已經檢查過，不能用新價位回頭判斷）。
+    # 呼叫前資金費已結算到這根收盤，所以移動 entry_bar 不影響資金費
+    t.entry_bar = bar.time
+    if t.stop_price or t.take_profit_price:
+        t.stop_price, t.take_profit_price = protection_prices(t.side, t.entry_price, rules.stop_loss_pct, rules.take_profit_pct)
+    return qty

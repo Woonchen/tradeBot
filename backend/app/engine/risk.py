@@ -36,10 +36,13 @@ async def open_position_count(s: AsyncSession) -> int:
     return int(await s.scalar(select(func.count()).select_from(Position).where(Position.closed_at.is_(None))))
 
 
-async def check_open_risk(s: AsyncSession, cfg: BotSettings, closing_one: bool):
+async def check_open_risk(s: AsyncSession, cfg: BotSettings, closing_one: bool, adding: bool = False):
+    """開倉前的風控；adding = 對既有部位加碼（不會多一個持倉，不檢查持倉數）。"""
     pnl = await daily_net_pnl(s)
     if pnl <= -cfg.max_daily_loss_usdt:
         raise Reject(f"今日已虧損 {pnl:.2f} USDT，達到每日虧損上限 {cfg.max_daily_loss_usdt}")
+    if adding:
+        return
     count = await open_position_count(s) - (1 if closing_one else 0)
     if count >= cfg.max_open_positions:
         raise Reject(f"持倉數 {count} 已達上限 {cfg.max_open_positions}")

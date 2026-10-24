@@ -117,6 +117,9 @@ class Position(Base):
     take_profit_price: Mapped[float | None] = mapped_column(Float)
     # True = 停損停利單掛在交易所；False = 由 position_sync 軟體監控
     native_protection: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 加碼：已經加了幾次、最後一次成交價（下一次加碼的距離從這裡算）
+    adds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_fill_price: Mapped[float | None] = mapped_column(Float)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
@@ -205,6 +208,11 @@ class StrategyConfig(Base):
     leverage: Mapped[int | None] = mapped_column(Integer)
     stop_loss_pct: Mapped[float | None] = mapped_column(Float)
     take_profit_pct: Mapped[float | None] = mapped_column(Float)
+    # 加碼：持倉中價格往有利方向每走 pyramid_atr 個 ATR(14) 就加一份（= 首筆 × pyramid_frac），
+    # 最多 pyramid_max 次，出場時全部一起平倉。pyramid_atr 為空 = 不加碼
+    pyramid_atr: Mapped[float | None] = mapped_column(Float)
+    pyramid_max: Mapped[int | None] = mapped_column(Integer)
+    pyramid_frac: Mapped[float | None] = mapped_column(Float)
     # 執行狀態：最後一根處理過的 K 棒、當時策略的判斷
     last_target: Mapped[str | None] = mapped_column(String(5))
     last_bar_time: Mapped[int | None] = mapped_column(Integer)
@@ -231,7 +239,8 @@ class ShadowTrade(Base):
     side: Mapped[str] = mapped_column(String(5))  # long / short
     qty: Mapped[float] = mapped_column(Float)
     entry_price: Mapped[float] = mapped_column(Float)
-    entry_bar: Mapped[int] = mapped_column(Integer)  # 產生進場判斷的那根 K 棒（開盤時間，秒）；之後的 K 棒才檢查停損停利
+    # 產生進場判斷的那根 K 棒（開盤時間，秒）；之後的 K 棒才檢查停損停利。加碼時移到加碼那根
+    entry_bar: Mapped[int] = mapped_column(Integer)
     entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     entry_fee: Mapped[float] = mapped_column(Float, default=0)
     stop_price: Mapped[float | None] = mapped_column(Float)
@@ -244,6 +253,9 @@ class ShadowTrade(Base):
     # 合約的資金費（正 = 付出、負 = 收到），規則跟回測一樣；funding_until = 已經結算到哪個時間（秒）
     funding: Mapped[float] = mapped_column(Float, default=0, server_default="0")
     funding_until: Mapped[int | None] = mapped_column(Integer)
+    # 加碼：已加次數、最後一次成交價（entry_price 是加碼後的平均成本）
+    adds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_fill_price: Mapped[float | None] = mapped_column(Float)
 
 
 SHADOW_START_EQUITY = 10_000.0

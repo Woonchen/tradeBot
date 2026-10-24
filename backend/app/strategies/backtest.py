@@ -11,6 +11,9 @@
   停損停利出場後，策略判斷沒變就不會再進場，要等判斷改變（跟實際執行一樣）
   實際交易時合約用標記價格觸發，這裡用成交價的 K 棒近似
 - 下單大小規則跟機器人一樣：固定保證金或可用資金 %，合約乘上槓桿
+- 加碼（pyramid_atr > 0）：持倉中第 i 根收盤價比最後一次成交價往有利方向多走 pyramid_atr 個 ATR(14)，
+  且判斷沒變，就在第 i+1 根開盤加一份（= 首筆金額 × pyramid_frac），最多 pyramid_max 次；
+  平均成本重算，停損停利以平均成本重新計算；出場時全部一起平倉。每筆交易的 fills 記錄每一次成交
 - warmup > 0 時，前 warmup 根只用來計算指標，不交易也不計入結果；回測起點就像那一刻啟用策略：
   當下的判斷只記下來，要等判斷「改變」才進場（跟實際啟用一樣，不會一開始就追進既有的部位）；
   follow_initial=True 時（對應策略的「啟用時立即依目前判斷進場」）起點就照當下判斷進場
@@ -19,6 +22,7 @@
 from dataclasses import dataclass, field
 
 from ..engine.sizing import protection_prices
+from .indicators import atr
 from .base import Candle, Strategy, for_market
 
 
@@ -44,12 +48,16 @@ def run_backtest(
     take_profit_pct: float = 0,
     follow_initial: bool = False,
     funding: list[tuple[int, float]] | None = None,
+    pyramid_atr: float = 0,
+    pyramid_max: int = 0,
+    pyramid_frac: float = 0.5,
 ) -> BacktestResult:
     """funding：[(結算時間秒, 每 8 小時費率 %)]，依時間排序；只用在合約。"""
     if fee_rate is None:
         fee_rate = 0.001 if market == "spot" else 0.0004
     lev = max(leverage, 1) if market == "futures" else 1
     targets = [for_market(t, market) for t in strategy.targets(candles)]
+    atrs = atr([c.high for c in candles], [c.low for c in candles], [c.close for c in candles], 14) if pyramid_atr > 0 else []
     if warmup > 0:
         warmup = min(warmup, len(candles) - 1)
         observed = "flat" if follow_initial else targets[warmup - 1]  # 啟用那一刻的判斷
@@ -57,7 +65,7 @@ def run_backtest(
         for t in targets[warmup:]:
             changed = changed or t != observed
             window.append(t if changed else "flat")
-        candles, targets = candles[warmup:], window
+        candles, targets, atrs = candles[warmup:], window, atrs[warmup:]
 
     cash = start_equity  # 已實現的資金（含手續費）
     side: str = "flat"
@@ -67,6 +75,9 @@ def run_backtest(
     stop = tp = None
     blocked = None  # 被停損停利出場時的策略判斷；判斷沒變之前不再進場
     trade_funding = 0.0  # 這筆交易付掉的資金費（收到為負）
+    fills: list[dict] = []  # 這筆交易的每一次成交（首筆 + 加碼）
+    used_margin = 0.0
+    pending_add = False
     total_funding = 0.0
     rates = funding if market == "futures" and funding else []
     fi = 0  # 下一個還沒處理的結算
@@ -84,10 +95,12 @@ def run_backtest(
                 cash -= paid
                 trade_funding += paid
                 total_funding += paid
+                for f in fills:  # 分攤到每一次成交（組合回測要按每份的大小重算）
+                    f["funding"] += paid * f["qty"] / qty
             fi += 1
 
     def close_at(price: float, t: int, reason: str):
-        nonlocal cash, side, qty, entry, trade_funding
+        nonlocal cash, side, qty, entry, trade_funding, fills, used_margin, pending_add
         d = 1 if side == "long" else -1
         pnl = (price - entry) * qty * d
         fee = price * qty * fee_rate
@@ -96,8 +109,9 @@ def run_backtest(
             "side": side, "entry_time": entry_time, "exit_time": t, "entry": entry, "exit": price, "qty": qty,
             "pnl": pnl, "fees": entry_fee + fee, "funding": trade_funding,
             "net": pnl - entry_fee - fee - trade_funding, "exit_reason": reason,
+            "adds": len(fills) - 1, "exit_fee": fee, "fills": fills,
         })
-        side, qty, entry, trade_funding = "flat", 0.0, 0.0, 0.0
+        side, qty, entry, trade_funding, fills, used_margin, pending_add = "flat", 0.0, 0.0, 0.0, [], 0.0, False
 
     for i, c in enumerate(candles):
         settle(c.time, c.open, inclusive=True)  # 開盤那一刻的結算先於這根開盤的下單
@@ -117,7 +131,27 @@ def run_backtest(
                     side, qty, entry, entry_time = want, margin * lev / c.open, c.open, c.time
                     entry_fee = entry * qty * fee_rate
                     cash -= entry_fee
+                    used_margin = margin
+                    fills = [{"time": c.time, "price": c.open, "qty": qty, "fee": entry_fee, "funding": 0.0}]
                     stop, tp = protection_prices(side, entry, stop_loss_pct, take_profit_pct)
+        elif pending_add and side != "flat":
+            # 加碼：首筆的規則 × pyramid_frac，以當下權益（含未實現損益，跟實際一樣）計算，可用資金為上限
+            eq_now = cash + (c.open - entry) * qty * (1 if side == "long" else -1)
+            free = eq_now - used_margin
+            base = {"fixed": None, "equity": eq_now}.get(size_mode, free)
+            margin = (size_value if base is None else base * size_value / 100) * pyramid_frac
+            margin = min(margin, max(0.0, free))
+            if margin > 0:
+                add_qty = margin * lev / c.open
+                fee = c.open * add_qty * fee_rate
+                cash -= fee
+                entry_fee += fee
+                entry = (entry * qty + c.open * add_qty) / (qty + add_qty)
+                qty += add_qty
+                used_margin += margin
+                fills.append({"time": c.time, "price": c.open, "qty": add_qty, "fee": fee, "funding": 0.0})
+                stop, tp = protection_prices(side, entry, stop_loss_pct, take_profit_pct)
+        pending_add = False
         if side != "flat" and (stop or tp):
             long = side == "long"
             worst, best = (c.low, c.high) if long else (c.high, c.low)
@@ -133,6 +167,10 @@ def run_backtest(
         settle(c.time + sec, c.close, inclusive=False)  # K 棒中間的結算（下一根開盤那次留給下一根）
         unreal = (c.close - entry) * qty * (1 if side == "long" else -1) if side != "flat" else 0.0
         res.equity.append({"time": c.time, "value": cash + unreal})
+        if (pyramid_atr > 0 and side != "flat" and len(fills) - 1 < pyramid_max and targets[i] == side
+                and atrs[i] is not None):
+            d = 1 if side == "long" else -1
+            pending_add = d * (c.close - fills[-1]["price"]) >= pyramid_atr * atrs[i]
 
     if side != "flat":  # 最後一根收盤時強制平倉，方便統計
         close_at(candles[-1].close, candles[-1].time, "end")

@@ -117,3 +117,31 @@ async def test_portfolio_api_uses_enabled_live_strategies(env, monkeypatch):  # 
     assert abs(big["legs"][0]["net"]) > abs(d["legs"][0]["net"]) * 1.2
     async with sf() as s:
         assert (await s.get(StrategyConfig, 1)).size_value == 50
+
+
+def smooth(prices):
+    """開盤 = 上一根收盤（真實行情的樣子），組合回測和單一回測的權益基準才會一樣。"""
+    out, prev = [], prices[0]
+    for i, p in enumerate(prices):
+        out.append(Candle(i * H4, prev, max(prev, p) * 1.001, min(prev, p) * 0.999, p, 1))
+        prev = p
+    return out
+
+
+def test_pyramiding_backtest_adds_on_strength_and_matches_portfolio():
+    prices = [100] * 20 + [100 + 3 * i for i in range(1, 25)] + [150, 140, 120, 110, 100]
+    tg = ["flat"] * 20 + ["long"] * 26 + ["flat"] * 3
+    cs = smooth(prices)
+    kw = dict(market="futures", leverage=2, warmup=15, pyramid_atr=2, pyramid_max=3, pyramid_frac=0.5)
+    ref = run_backtest(Scripted(tg), cs, size_mode="equity", size_value=20, start_equity=10_000, **kw)
+    t = ref.trades[0]
+    assert t["adds"] == 3 and len(t["fills"]) == 4
+    assert [f["price"] for f in t["fills"]] == sorted(f["price"] for f in t["fills"])  # 越漲越加
+    assert t["entry"] == pytest.approx(sum(f["price"] * f["qty"] for f in t["fills"]) / t["qty"])  # 平均成本
+    plain = run_backtest(Scripted(tg), cs, size_mode="equity", size_value=20, start_equity=10_000, **{**kw, "pyramid_atr": 0})
+    assert ref.stats["final_equity"] > plain.stats["final_equity"]  # 趨勢延續時加碼賺更多
+
+    unit = run_backtest(Scripted(tg), cs, size_mode="fixed", size_value=1, start_equity=1e9, **{**kw, "leverage": 1})
+    lg = Leg(1, "s", "SUSDT", "futures", "equity", 20, 2, cs[15:], unit.trades, pyramid_frac=0.5)
+    out = run_portfolio([lg], start_equity=10_000)
+    assert out.stats["final_equity"] == pytest.approx(ref.stats["final_equity"], rel=1e-6)

@@ -110,6 +110,8 @@ export interface StrategyConfig {
   mode: "live" | "shadow";
   /** 這個策略自己的下單規則；null = 沿用「設定」頁 */
   size_mode: SizeMode | null; size_value: number | null; leverage: number | null;
+  /** 加碼：每往有利方向走 pyramid_atr 個 ATR 加一份（首筆 × pyramid_frac），最多 pyramid_max 次；null = 不加碼 */
+  pyramid_atr: number | null; pyramid_max: number | null; pyramid_frac: number | null;
   stop_loss_pct: number | null; take_profit_pct: number | null;
   last_bar_time: number | null; last_run_at: string | null; last_error: string | null; created_at: string;
   /** 最近一次啟用（或啟用中改了設定）的時間 */
@@ -129,6 +131,8 @@ export interface BacktestTrade {
   pnl: number; fees: number; net: number; exit_reason: "signal" | "stop" | "take_profit" | "end";
   /** 這筆付掉的資金費（正 = 付、負 = 收），淨損益已扣掉 */
   funding: number;
+  /** 這筆加碼了幾次（不加碼時 0） */
+  adds?: number;
 }
 export interface BacktestStats {
   start_equity: number; final_equity: number; total_return: number; max_drawdown: number; trades: number;

@@ -38,7 +38,16 @@ const orderBody = (o: OrderRules) => Object.fromEntries(ORDER_KEYS.filter((k) =>
 const hasOrder = (o: OrderRules) => ORDER_KEYS.some((k) => o[k] !== null);
 const pickOrder = (c: OrderRules): OrderRules => Object.fromEntries(ORDER_KEYS.map((k) => [k, c[k]])) as OrderRules;
 
-type Draft = OrderRules & {
+/** 加碼設定（三個都 null = 不加碼） */
+type Pyramid = Pick<StrategyConfig, "pyramid_atr" | "pyramid_max" | "pyramid_frac">;
+const PYRAMID_KEYS = ["pyramid_atr", "pyramid_max", "pyramid_frac"] as const;
+const NO_PYRAMID: Pyramid = { pyramid_atr: null, pyramid_max: null, pyramid_frac: null };
+const pickPyramid = (c: Pyramid): Pyramid => Object.fromEntries(PYRAMID_KEYS.map((k) => [k, c[k]])) as Pyramid;
+const pyramidBody = (c: Pyramid) => (c.pyramid_atr === null ? {} : pickPyramid(c));
+const pyramidText = (c: Pyramid) =>
+  c.pyramid_atr === null ? "" : `；每漲 ${c.pyramid_atr} 個 ATR 加碼 ${c.pyramid_frac} 份，最多 ${c.pyramid_max} 次`;
+
+type Draft = OrderRules & Pyramid & {
   id?: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
   params: Record<string, any>; enabled: boolean; enter_on_enable: boolean; mode: "live" | "shadow";
 };
@@ -116,6 +125,7 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
     <div className="card tile"><div className="label">{label}</div><div className={`value ${cls}`}>{value}</div>{sub && <div className="sub">{sub}</div>}</div>
   );
   const equity = result.equity.map((p) => ({ ts: new Date(p.time * 1000).toISOString(), total_usdt: p.value, spot_usdt: 0, futures_usdt: 0 }));
+  const pyramided = result.trades.some((t) => t.adds); // 有加碼才顯示「加碼」欄；進場價是平均成本
   return (
     <div className="grid" style={{ marginTop: 16 }}>
       <p className="muted" style={{ margin: 0, fontSize: 12 }}>
@@ -152,7 +162,7 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
         {result.trades.length === 0 ? <div className="empty">這段期間沒有交易</div> : (
           <div className="table-wrap" style={{ maxHeight: 360, overflowY: "auto" }}>
             <table>
-              <thead><tr><th>方向</th><th>進場</th><th className="num">進場價</th><th>出場</th><th className="num">出場價</th><th className="num">損益</th><th className="num">手續費</th>{s.funding_included && <th className="num">資金費</th>}<th className="num">淨損益</th><th>出場原因</th></tr></thead>
+              <thead><tr><th>方向</th><th>進場</th><th className="num">{pyramided ? "平均進場價" : "進場價"}</th><th>出場</th><th className="num">出場價</th><th className="num">損益</th><th className="num">手續費</th>{s.funding_included && <th className="num">資金費</th>}<th className="num">淨損益</th>{pyramided && <th className="num">加碼</th>}<th>出場原因</th></tr></thead>
               <tbody>{[...result.trades].reverse().map((t, i) => (
                 <tr key={i}>
                   <td><span className={`badge ${t.side}`}>{TARGET_ZH[t.side]}</span></td>
@@ -161,6 +171,7 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
                   <td className={`num ${pnlClass(t.pnl)}`}>{fmtSigned(t.pnl)}</td><td className="num">{fmtNum(t.fees)}</td>
                   {s.funding_included && <td className="num" title="正 = 付出、負 = 收到">{fmtSigned(t.funding)}</td>}
                   <td className={`num ${pnlClass(t.net)}`}>{fmtSigned(t.net)}</td>
+                  {pyramided && <td className="num">{t.adds ? `${t.adds} 次` : <span className="muted">—</span>}</td>}
                   <td className={t.exit_reason === "stop" ? "down" : t.exit_reason === "take_profit" ? "up" : "muted"}>{EXIT_ZH[t.exit_reason] ?? "—"}</td>
                 </tr>
               ))}</tbody>
@@ -212,7 +223,7 @@ function SweepPanel({ info, d, bars, sizing }: { info: StrategyInfo; d: Draft; b
       body: JSON.stringify({
         strategy: d.strategy, symbol: d.symbol, market: d.market, interval: d.interval,
         params: cleanParams(info, d.params, d.market), bars, compare_earlier: true, enter_on_enable: d.enter_on_enable,
-        ...(sizing ?? orderBody(d)), x: { param: x!.param, values: xs }, ...(y ? { y: { param: y.param, values: ys } } : {}),
+        ...(sizing ?? orderBody(d)), ...pyramidBody(d), x: { param: x!.param, values: xs }, ...(y ? { y: { param: y.param, values: ys } } : {}),
       }),
     }),
   });
@@ -296,6 +307,7 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
         strategy: d.strategy, symbol: d.symbol, market: d.market, interval: d.interval,
         params: cleanParams(info, d.params, d.market), bars, compare_earlier: req.compare, enter_on_enable: d.enter_on_enable,
         ...(sizing ?? orderBody(d)), // 沒有另外自訂時，回測用這個策略的下單規則
+        ...pyramidBody(d),
       }),
     }),
   });
@@ -402,6 +414,32 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
             </>
           )}
         </div>
+        <div className="form-grid">
+          <label className="field">加碼
+            <select value={d.pyramid_atr === null ? "off" : "on"} onChange={(e) => setD(e.target.value === "off"
+              ? { ...d, ...NO_PYRAMID } : { ...d, pyramid_atr: 4, pyramid_max: 3, pyramid_frac: 0.5 })}>
+              <option value="off">不加碼</option>
+              <option value="on">賺錢時加碼</option>
+            </select>
+            <small>持倉往有利方向走夠遠就加一份，出場時全部一起平倉</small>
+          </label>
+          {d.pyramid_atr !== null && (
+            <>
+              <label className="field">間距（ATR）
+                <input type="number" min={0.1} step="any" value={d.pyramid_atr} onChange={(e) => set("pyramid_atr", Number(e.target.value))} />
+                <small>收盤比上次成交多走幾個 ATR(14) 就加碼</small>
+              </label>
+              <label className="field">每次份量
+                <input type="number" min={0.05} step="any" value={d.pyramid_frac ?? 0.5} onChange={(e) => set("pyramid_frac", Number(e.target.value))} />
+                <small>首筆金額的幾倍，0.5 = 半份</small>
+              </label>
+              <label className="field">最多次數
+                <input type="number" min={1} max={10} step={1} value={d.pyramid_max ?? 3} onChange={(e) => set("pyramid_max", Number(e.target.value))} />
+                <small>部位最多到首筆的 {fmtNum(1 + (d.pyramid_max ?? 0) * (d.pyramid_frac ?? 0), 2)} 倍</small>
+              </label>
+            </>
+          )}
+        </div>
       </div>
       <label className="field" style={{ maxWidth: 420, marginTop: 14 }}>執行方式
         <select value={d.mode} onChange={(e) => set("mode", e.target.value as Draft["mode"])}>
@@ -440,7 +478,7 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
             {!sizing && eff && (
               <small>
                 {sizeText(eff.size_mode, eff.size_value)}
-                {d.market === "futures" && ` × ${eff.leverage} 倍槓桿`}{protectionText(eff.stop_loss_pct, eff.take_profit_pct)}，起始 10,000 USDT
+                {d.market === "futures" && ` × ${eff.leverage} 倍槓桿`}{protectionText(eff.stop_loss_pct, eff.take_profit_pct)}{pyramidText(d)}，起始 10,000 USDT
               </small>
             )}
           </label>
@@ -529,7 +567,7 @@ function Performance({ labelOf }: { labelOf: (key: string) => string }) {
       method: "POST",
       body: JSON.stringify({
         strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params,
-        bars: Math.min(barsSince(c), 20000), enter_on_enable: c.enter_on_enable, ...orderBody(c),
+        bars: Math.min(barsSince(c), 20000), enter_on_enable: c.enter_on_enable, ...orderBody(c), ...pyramidBody(c),
       }),
     }),
   });
@@ -599,7 +637,7 @@ export function Strategies() {
       method: "PUT",
       body: JSON.stringify({
         name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params,
-        enabled: !c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode, ...pickOrder(c),
+        enabled: !c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode, ...pickOrder(c), ...pickPyramid(c),
       }),
     }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["strategies"] }),
@@ -613,7 +651,7 @@ export function Strategies() {
   const labelOf = (key: string) => catalog.data.find((c) => c.key === key)?.label ?? key;
   const newDraft = (): Draft => {
     const first = catalog.data[0];
-    return { name: autoName("BTCUSDT", first.label, "1h"), strategy: first.key, symbol: "BTCUSDT", market: "futures", interval: "1h", params: defaults(first), enabled: false, enter_on_enable: false, mode: "live", ...NO_ORDER };
+    return { name: autoName("BTCUSDT", first.label, "1h"), strategy: first.key, symbol: "BTCUSDT", market: "futures", interval: "1h", params: defaults(first), enabled: false, enter_on_enable: false, mode: "live", ...NO_ORDER, ...NO_PYRAMID };
   };
 
   return (
@@ -635,6 +673,7 @@ export function Strategies() {
                   <td>
                     {c.name}{c.mode === "shadow" && <span className="badge" style={{ marginLeft: 6 }}>影子</span>}
                     {hasOrder(c) && <span className="badge" style={{ marginLeft: 6 }} title="這個策略有自己的下單金額／槓桿／停損停利">自訂下單</span>}
+                    {c.pyramid_atr !== null && <span className="badge" style={{ marginLeft: 6 }} title={pyramidText(c).slice(1)}>加碼</span>}
                   </td>
                   <td className="muted">{labelOf(c.strategy)}</td>
                   <td>{c.symbol} <span className="muted">{c.market === "futures" ? "合約" : "現貨"}</span></td>
@@ -647,7 +686,7 @@ export function Strategies() {
                   <td className="muted">{c.last_bar_time ? fmtTime(new Date(c.last_bar_time * 1000).toISOString()) : "—"}</td>
                   <td style={{ display: "flex", gap: 6 }}>
                     <button className="btn small" disabled={toggle.isPending} onClick={() => toggle.mutate(c)}>{c.enabled ? "停用" : "啟用"}</button>
-                    <button className="btn small" onClick={() => setEditing({ id: c.id, name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, enabled: c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode, ...pickOrder(c) })}>編輯／回測</button>
+                    <button className="btn small" onClick={() => setEditing({ id: c.id, name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, enabled: c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode, ...pickOrder(c), ...pickPyramid(c) })}>編輯／回測</button>
                     <button className="btn small danger" disabled={remove.isPending} onClick={() => confirm(`刪除策略「${c.name}」？既有持倉不會自動平倉。`) && remove.mutate(c.id)}>刪除</button>
                   </td>
                 </tr>

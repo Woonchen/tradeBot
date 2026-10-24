@@ -2,7 +2,7 @@ import asyncio
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +22,31 @@ from .deps import get_executor, require_user
 router = APIRouter(prefix="/api/strategies", tags=["strategies"], dependencies=[Depends(require_user)])
 
 
-class StrategyBody(BaseModel):
+PYRAMID_FIELDS = ("pyramid_atr", "pyramid_max", "pyramid_frac")
+
+
+class PyramidFields(BaseModel):
+    """加碼：持倉中價格往有利方向每走 pyramid_atr 個 ATR 加一份（首筆 × pyramid_frac），最多 pyramid_max 次。
+    三個一起填才啟用；全部留空 = 不加碼。"""
+    pyramid_atr: float | None = Field(None, gt=0, le=50)
+    pyramid_max: int | None = Field(None, ge=1, le=10)
+    pyramid_frac: float | None = Field(None, gt=0, le=5)
+
+    @model_validator(mode="after")
+    def _all_or_none(self):
+        filled = [getattr(self, f) is not None for f in PYRAMID_FIELDS]
+        if any(filled) and not all(filled):
+            raise ValueError("加碼的間距、次數、份量要一起填（全部留空 = 不加碼）")
+        return self
+
+    def pyramid_kwargs(self) -> dict:
+        """給 run_backtest 的參數。"""
+        if self.pyramid_atr is None:
+            return {}
+        return {"pyramid_atr": self.pyramid_atr, "pyramid_max": self.pyramid_max, "pyramid_frac": self.pyramid_frac}
+
+
+class StrategyBody(PyramidFields):
     name: str = Field(min_length=1, max_length=64)
     strategy: str
     symbol: str = Field(min_length=2, max_length=40)
@@ -40,7 +64,7 @@ class StrategyBody(BaseModel):
     take_profit_pct: float | None = Field(None, ge=0, le=1000)
 
 
-class BacktestBody(BaseModel):
+class BacktestBody(PyramidFields):
     strategy: str
     symbol: str
     market: Literal["spot", "futures"]
@@ -193,7 +217,7 @@ async def update_config(
     await _check_one_per_symbol(s, body, config_id)
     # 只改名稱、開關或下單金額不算改了判斷邏輯，不必重新開始觀察
     changed_logic = any(
-        getattr(cfg, k) != v for k, v in body.model_dump(exclude={"name", "enabled", *ORDER_FIELDS}).items()
+        getattr(cfg, k) != v for k, v in body.model_dump(exclude={"name", "enabled", *ORDER_FIELDS, *PYRAMID_FIELDS}).items()
     )
     turned_on = body.enabled and not cfg.enabled
     changes = describe_changes(cfg, body)
@@ -219,6 +243,7 @@ CHANGE_LABELS = {
     "name": "名稱", "enabled": "開關", "mode": "模式", "strategy": "策略", "symbol": "交易對", "market": "市場",
     "interval": "週期", "params": "參數", "enter_on_enable": "啟用時立即進場", "size_mode": "金額方式",
     "size_value": "金額", "leverage": "槓桿", "stop_loss_pct": "停損", "take_profit_pct": "停利",
+    "pyramid_atr": "加碼間距", "pyramid_max": "加碼次數", "pyramid_frac": "加碼份量",
 }
 _WORDS = {
     "market": {"spot": "現貨", "futures": "合約"}, "mode": {"live": "實際下單", "shadow": "影子模式"},
@@ -229,12 +254,13 @@ _WORDS = {
 
 def _show(field: str, v) -> str:
     if v is None:
-        return "照設定頁"
+        return "不加碼" if field in PYRAMID_FIELDS else "照設定頁"
     if field in _WORDS:
         return _WORDS[field].get(v, str(v))
     if isinstance(v, float):
         v = f"{v:g}"
-    return {"leverage": f"{v} 倍", "stop_loss_pct": f"{v}%", "take_profit_pct": f"{v}%"}.get(field, str(v))
+    return {"leverage": f"{v} 倍", "stop_loss_pct": f"{v}%", "take_profit_pct": f"{v}%", "pyramid_atr": f"{v} ATR",
+            "pyramid_max": f"{v} 次", "pyramid_frac": f"{v} 份"}.get(field, str(v))
 
 
 def describe_changes(cfg: StrategyConfig, body: StrategyBody) -> list[str]:
@@ -314,10 +340,11 @@ async def backtest(
         raise HTTPException(422, "歷史 K 線不足")
     sizing = _sizing(body, bot)
     follow = {"follow_initial": body.enter_on_enable, **await _funding(request, body.market, body.symbol)}
-    res = run_backtest(strat, recent, warmup=recent_warm, **sizing, **follow)
+    res = run_backtest(strat, recent, warmup=recent_warm, **sizing, **follow, **body.pyramid_kwargs())
     earlier = None
     if body.compare_earlier and len(candles) >= 2 * n + warm:
-        earlier = run_backtest(strat, candles[-(2 * n + warm):-n], warmup=warm, **sizing, **follow).stats
+        earlier = run_backtest(strat, candles[-(2 * n + warm):-n], warmup=warm, **sizing, **follow,
+                               **body.pyramid_kwargs()).stats
     return {
         "symbol": symbol,
         "params": strat.p,
@@ -347,6 +374,12 @@ class PortfolioBody(BaseModel):
 
 
 _portfolio_lock = asyncio.Lock()
+
+
+def _pyramid(cfg: StrategyConfig) -> dict:
+    if cfg.pyramid_atr is None:
+        return {}
+    return {"pyramid_atr": cfg.pyramid_atr, "pyramid_max": cfg.pyramid_max or 0, "pyramid_frac": cfg.pyramid_frac or 0.5}
 
 
 @router.post("/portfolio-backtest")
@@ -382,9 +415,10 @@ async def portfolio_backtest(
                 strat, candles, market=cfg.market, size_mode="fixed", size_value=1, leverage=1, start_equity=1e9,
                 warmup=warm, stop_loss_pct=rules.stop_loss_pct, take_profit_pct=rules.take_profit_pct,
                 follow_initial=cfg.enter_on_enable, **await _funding(request, cfg.market, cfg.symbol),
+                **_pyramid(cfg),
             )
             legs.append(Leg(cfg.id, cfg.name, cfg.symbol, cfg.market, rules.size_mode, rules.size_value,
-                            rules.leverage, candles[warm:], res.trades))
+                            rules.leverage, candles[warm:], res.trades, cfg.pyramid_frac or 0.5))
         out = run_portfolio(legs, start_equity=body.start_equity, max_open=bot.max_open_positions,
                             max_drawdown_pct=bot.max_drawdown_pct if body.breaker else 0)
     return {"stats": out.stats, "equity": out.equity,
@@ -481,8 +515,8 @@ async def sweep(
                     if st is None:
                         cells.append({"error": err})
                         continue
-                    r = run_backtest(st, recent, warmup=recent_warm, **sizing, **follow).stats
-                    e = run_backtest(st, earlier, warmup=warm, **sizing, **follow).stats if earlier else None
+                    r = run_backtest(st, recent, warmup=recent_warm, **sizing, **follow, **body.pyramid_kwargs()).stats
+                    e = run_backtest(st, earlier, warmup=warm, **sizing, **follow, **body.pyramid_kwargs()).stats if earlier else None
                     cells.append({"recent": _brief(r), "earlier": _brief(e) if e else None})
                 out.append(cells)
             return out
