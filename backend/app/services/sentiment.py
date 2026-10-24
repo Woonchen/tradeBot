@@ -4,10 +4,17 @@
 - 資金費率（Binance 永續合約）：某個幣第一次用到時補齊 2019-09 起的全部歷史，之後只抓新的
 - 散戶多空比、大戶多空比、未平倉量、主動買賣比：Binance 只保留 30 天，每小時把最近 30 天
   寫進資料庫（重複的會覆蓋），日積月累成自己的歷史；後端停機一陣子，只要還在 30 天內也會補回來
+- 每小時的散戶多空比（給策略用，metric = long_short_1h）：最近 30 天從 API 抓，更早的從
+  data.binance.vision 的每日檔補齊（2020-09 起）。每小時只存 :55 分那一筆（見 strategies/external.py）
 """
 
+import asyncio
+import csv
+import io
 import logging
 import time
+import zipfile
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import func, select
@@ -23,6 +30,10 @@ FNG_URL = "https://api.alternative.me/fng/"
 FAPI = "https://fapi.binance.com"
 FUNDING_START_MS = 1567296000000  # 2019-09-01，Binance USDT 永續合約開始的時間
 DAY = 86400
+VISION = "https://data.binance.vision/data/futures/um/daily/metrics"
+LS_START = date(2020, 9, 1)  # data.binance.vision 合約數據最早的日期
+LS_SAMPLE = 3300  # 每小時只存 :55 分（API 時間）那一筆
+LS_METRIC = "long_short_1h"
 
 # metric → (Binance 端點, 取哪個欄位)
 METRICS = {
@@ -69,6 +80,7 @@ class Sentiment:
         self.sf = sf
         self.http = http or httpx.AsyncClient(timeout=20, headers={"User-Agent": "tradebot"})
         self._checked: dict[str, float] = {}  # 同一份資料多久最多向外抓一次
+        self._backfilled: set[str] = set()
 
     async def close(self):
         await self.http.aclose()
@@ -155,6 +167,101 @@ class Sentiment:
         for t in tickers:
             await self.funding_series(t)
         await self.record_metrics(tickers)
+        for t in tickers:
+            await self.long_short_series(t)
+            if t not in self._backfilled:  # 每次啟動檢查一次；補過的日子會跳過，所以很快
+                self._backfilled.add(t)
+                try:
+                    n = await self.backfill_long_short(t)
+                    if n:
+                        log.info("long/short history for %s: backfilled %d days", t, n)
+                except Exception as e:
+                    log.warning("long/short backfill failed for %s: %r", t, e)
+
+    # ------------------------------------------------------------ 每小時的散戶多空比
+    async def refresh_long_short(self, ticker: str) -> None:
+        """從 API 補到最新（API 只保留 30 天；每次最多 500 筆 5 分鐘資料）。"""
+        async with self.sf() as s:
+            last = await s.scalar(select(func.max(MarketMetric.ts)).where(
+                MarketMetric.symbol == ticker, MarketMetric.metric == LS_METRIC))
+        now = int(time.time())
+        start = max((last or 0) + 1, now - 29 * DAY)
+        rows = []
+        while start < now:
+            end = min(start + 500 * 300, now)
+            data = await self._get(f"{FAPI}/futures/data/globalLongShortAccountRatio",
+                                   {"symbol": ticker, "period": "5m", "limit": 500, "startTime": start * 1000, "endTime": end * 1000})
+            rows += [{"symbol": ticker, "metric": LS_METRIC, "ts": int(d["timestamp"]) // 1000, "value": float(d["longShortRatio"])}
+                     for d in data if int(d["timestamp"]) // 1000 % 3600 == LS_SAMPLE]
+            start = end + 1
+        async with self.sf() as s:
+            await upsert(s, MarketMetric, rows)
+            await s.commit()
+
+    async def backfill_long_short(self, ticker: str, until: date | None = None) -> int:
+        """從 data.binance.vision 的每日檔補齊 API 拿不到的歷史；已經補過的日子會跳過。回傳補了幾天。"""
+        async with self.sf() as s:
+            first = await s.scalar(select(func.min(MarketMetric.ts)).where(
+                MarketMetric.symbol == ticker, MarketMetric.metric == LS_METRIC))
+        end = until or (datetime.fromtimestamp(first, timezone.utc).date() if first else date.today() - timedelta(days=1))
+        async with self.sf() as s:
+            have = {int(t) // DAY for t in (await s.scalars(select(MarketMetric.ts).where(
+                MarketMetric.symbol == ticker, MarketMetric.metric == LS_METRIC, MarketMetric.ts < _ts(end)))).all()}
+        days = [d for d in _days(await self._first_vision_day(ticker, end), end) if _ts(d) // DAY not in have]
+        sem = asyncio.Semaphore(8)
+
+        async def one(d: date) -> list[dict]:
+            async with sem:
+                try:
+                    r = await self.http.get(f"{VISION}/{ticker}/{ticker}-metrics-{d.isoformat()}.zip")
+                except httpx.HTTPError:
+                    return []
+            if r.status_code != 200:
+                return []
+            return parse_vision_metrics(ticker, r.content)
+
+        done = 0
+        for i in range(0, len(days), 60):  # 分批寫入，中途停掉也不會白做
+            batch = await asyncio.gather(*(one(d) for d in days[i:i + 60]))
+            rows = [x for b in batch for x in b]
+            done += sum(bool(b) for b in batch)
+            async with self.sf() as s:
+                await upsert(s, MarketMetric, rows)
+                await s.commit()
+        return done
+
+    async def _first_vision_day(self, ticker: str, end: date) -> date:
+        """二分搜尋 data.binance.vision 上這個幣最早有資料的那天（多數幣 2021-12 才開始）。"""
+        async def exists(d: date) -> bool:
+            r = await self.http.head(f"{VISION}/{ticker}/{ticker}-metrics-{d.isoformat()}.zip")
+            return r.status_code == 200
+
+        lo, hi = 0, (end - LS_START).days
+        if hi <= 0 or await exists(LS_START):
+            return LS_START
+        while lo < hi:  # 找第一個有檔案的日子
+            mid = (lo + hi) // 2
+            if await exists(LS_START + timedelta(days=mid)):
+                hi = mid
+            else:
+                lo = mid + 1
+        return LS_START + timedelta(days=lo)
+
+    async def long_short_series(self, symbol: str) -> list[tuple[int, float]]:
+        """(時間, 散戶多空比)，每小時一筆。"""
+        ticker = normalize_ticker(symbol)
+        async with self.sf() as s:
+            latest = await s.scalar(select(func.max(MarketMetric.ts)).where(
+                MarketMetric.symbol == ticker, MarketMetric.metric == LS_METRIC))
+        if (latest is None or latest < time.time() - 3600) and self._due(f"ls:{ticker}", 60):
+            try:
+                await self.refresh_long_short(ticker)
+            except Exception as e:
+                log.warning("long/short refresh failed for %s: %r", ticker, e)
+        async with self.sf() as s:
+            q = select(MarketMetric.ts, MarketMetric.value).where(
+                MarketMetric.symbol == ticker, MarketMetric.metric == LS_METRIC).order_by(MarketMetric.ts)
+            return [(r.ts, r.value) for r in (await s.execute(q)).all()]
 
     # ------------------------------------------------------------ 給策略用
     async def attach(self, strategy, symbol: str) -> None:
@@ -165,7 +272,36 @@ class Sentiment:
             ext["fear_greed"] = await self.fear_greed_series()
         if "funding_rate" in needs:
             ext["funding_rate"] = await self.funding_series(symbol)
+        if "long_short" in needs:
+            ext["long_short"] = await self.long_short_series(symbol)
         strategy.ext = ext
 
 
-assert set(EXTERNAL_KINDS) == {"fear_greed", "funding_rate"}  # 新增種類時，attach 也要跟著處理
+assert set(EXTERNAL_KINDS) == {"fear_greed", "funding_rate", "long_short"}  # 新增種類時，attach 也要跟著處理
+
+
+def _ts(d: date) -> int:
+    return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
+
+
+def _days(a: date, b: date) -> list[date]:
+    return [a + timedelta(days=i) for i in range((b - a).days)]
+
+
+def parse_vision_metrics(ticker: str, content: bytes) -> list[dict]:
+    """data.binance.vision 的每日 metrics 檔 → 每小時一筆散戶多空比。
+
+    檔案的 create_time 比 API 的 timestamp 早 5 分鐘（同一個值），換算成 API 時間，跟即時資料一致。
+    """
+    z = zipfile.ZipFile(io.BytesIO(content))
+    text = z.read(z.namelist()[0]).decode()
+    rows = {}
+    for r in csv.DictReader(io.StringIO(text)):
+        try:
+            t = int(datetime.strptime(r["create_time"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()) + 300
+            v = float(r["count_long_short_ratio"])
+        except (KeyError, ValueError):
+            continue
+        if t % 3600 == LS_SAMPLE:
+            rows[t] = {"symbol": ticker, "metric": LS_METRIC, "ts": t, "value": v}
+    return list(rows.values())

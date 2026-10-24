@@ -10,7 +10,7 @@ from typing import Annotated, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .base import Candle, Param, Strategy, Target, plot, register
-from .external import EXTERNAL_KINDS, align
+from .external import EXTERNAL_KINDS, LAG, MAX_AGE, align
 from .indicators import atr, crossover, crossunder, ema, kd, rsi, sma
 
 Source = Literal["open", "high", "low", "close", "volume"]
@@ -67,9 +67,9 @@ class Kd(_Op):
 
 
 class External(_Op):
-    """市場情緒：恐懼貪婪指數（0～100）或資金費率（每 8 小時 %，0.01 = 0.01%）。"""
+    """市場情緒：恐懼貪婪指數（0～100）、資金費率（每 8 小時 %，0.01 = 0.01%）、散戶多空比（帳戶數，多 ÷ 空）。"""
 
-    kind: Literal["fear_greed", "funding_rate"]
+    kind: Literal["fear_greed", "funding_rate", "long_short"]
 
 
 class Macd(_Op):
@@ -192,7 +192,7 @@ def compute(op: dict, candles: list[Candle], cache: dict) -> list[float | None]:
             out = [None if m is None or s is None else m + sign * op["mult"] * s for m, s in zip(mid, sd)]
     elif k in EXTERNAL_KINDS:
         # 由策略執行／回測事先載入（strategy.ext）；沒有資料時整段都是 None，條件不成立
-        out = align(cache.get("__ext__", {}).get(k, []), candles)
+        out = align(cache.get("__ext__", {}).get(k, []), candles, LAG.get(k, 0), MAX_AGE.get(k))
     elif k in ("kd_k", "kd_d"):
         kk, dd = kd(col("high"), col("low"), col("close"), op["length"])
         out = kk if k == "kd_k" else dd
@@ -246,10 +246,10 @@ def _max_length(op: dict) -> int:
 _ON_PRICE = {"sma", "ema", "bb_upper", "bb_middle", "bb_lower", "highest", "lowest"}
 _SUB_GROUP = {
     "rsi": "RSI", "kd_k": "KD", "kd_d": "KD", "macd": "MACD", "macd_signal": "MACD", "macd_hist": "MACD",
-    "atr": "ATR", "fear_greed": "恐懼貪婪指數", "funding_rate": "資金費率 %",
+    "atr": "ATR", "fear_greed": "恐懼貪婪指數", "funding_rate": "資金費率 %", "long_short": "散戶多空比",
 }
 _ZH = {"bb_upper": "布林上軌", "bb_middle": "布林中軌", "bb_lower": "布林下軌", "macd": "MACD", "macd_signal": "MACD 訊號線",
-       "macd_hist": "MACD 柱", "fear_greed": "恐懼貪婪指數", "funding_rate": "資金費率"}
+       "macd_hist": "MACD 柱", "fear_greed": "恐懼貪婪指數", "funding_rate": "資金費率", "long_short": "散戶多空比"}
 
 
 def _name(op: dict) -> str:
@@ -288,7 +288,7 @@ class RuleStrategy(Strategy):
         return max(300, min(1500, longest * 10))
 
     def external_needs(self) -> set[str]:
-        """規則用到哪些 K 線以外的資料（恐懼貪婪、資金費率），呼叫端據此事先載入。"""
+        """規則用到哪些 K 線以外的資料（恐懼貪婪、資金費率、散戶多空比），呼叫端據此事先載入。"""
         return {op["kind"] for op in self._operands() if op["kind"] in EXTERNAL_KINDS}
 
     def _operands(self) -> list[dict]:

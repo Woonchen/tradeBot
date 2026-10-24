@@ -10,7 +10,7 @@ export type Operand =
   | { kind: "bb_upper" | "bb_middle" | "bb_lower"; length: number; mult: number }
   | { kind: "macd" | "macd_signal" | "macd_hist"; fast: number; slow: number; signal: number }
   | { kind: "kd_k" | "kd_d"; length: number }
-  | { kind: "fear_greed" | "funding_rate" };
+  | { kind: "fear_greed" | "funding_rate" | "long_short" };
 type Kind = Operand["kind"];
 type Cmp = ">" | "<" | ">=" | "<=" | "crosses_above" | "crosses_below";
 export interface Condition { left: Operand; cmp: Cmp; right: Operand }
@@ -37,6 +37,7 @@ const KINDS: { kind: Kind; label: string; group: string }[] = [
   { kind: "kd_d", label: "KD 的 D 值", group: "動能" },
   { kind: "fear_greed", label: "恐懼貪婪指數（0–100）", group: "情緒" },
   { kind: "funding_rate", label: "資金費率（%／8 小時）", group: "情緒" },
+  { kind: "long_short", label: "散戶多空比（帳戶數，多 ÷ 空）", group: "情緒" },
   { kind: "bb_upper", label: "布林上軌", group: "波動" },
   { kind: "bb_middle", label: "布林中軌", group: "波動" },
   { kind: "bb_lower", label: "布林下軌", group: "波動" },
@@ -62,7 +63,7 @@ function defaultOperand(kind: Kind): Operand {
     case "highest": case "lowest": return { kind, length: 20 };
     case "bb_upper": case "bb_middle": case "bb_lower": return { kind, length: 20, mult: 2 };
     case "kd_k": case "kd_d": return { kind, length: 9 };
-    case "fear_greed": case "funding_rate": return { kind };
+    case "fear_greed": case "funding_rate": case "long_short": return { kind };
     default: return { kind, fast: 12, slow: 26, signal: 9 };
   }
 }
@@ -80,6 +81,7 @@ export function describeOperand(o: Operand): string {
     case "kd_k": case "kd_d": return `${o.kind === "kd_k" ? "K" : "D"}(${o.length})`;
     case "fear_greed": return "恐懼貪婪指數";
     case "funding_rate": return "資金費率(%)";
+    case "long_short": return "散戶多空比";
     default: return `${label}(${o.fast}, ${o.slow}, ${o.signal})`;
   }
 }
