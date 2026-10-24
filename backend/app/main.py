@@ -19,6 +19,8 @@ from .workers.strategy_runner import StrategyRunner
 from .workers.sync import SyncWorkers, every
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# httpx 每個請求都記一筆 INFO（補歷史資料時上萬筆）；只留警告以上，失敗時由呼叫端記錄
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 
