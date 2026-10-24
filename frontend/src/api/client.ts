@@ -197,6 +197,7 @@ export interface PortfolioResult {
     stopped_at: number | null; from: number | null; to: number | null;
   };
   equity: { time: number; value: number }[];
-  legs: { id: number; name: string; symbol: string; trades: number; net: number; win_rate: number | null }[];
+  legs: { id: number; name: string; symbol: string; trades: number; net: number; win_rate: number | null;
+    size_mode: SizeMode; size_value: number; leverage: number }[];
   rules: { max_open_positions: number; max_drawdown_pct: number };
 }

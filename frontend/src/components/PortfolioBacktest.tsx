@@ -1,8 +1,20 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { api, type BotSettings, type PortfolioResult, type StrategyConfig } from "../api/client";
-import { fmtNum, fmtPct, fmtSigned, fmtTime, pnlClass } from "../format";
+import { api, type BotSettings, type PortfolioResult, type SizeMode, type StrategyConfig } from "../api/client";
+import { fmtNum, fmtPct, fmtSigned, fmtTime, pnlClass, SIZE_MODES, sizeLabel } from "../format";
 import { EquityChart } from "./EquityChart";
+
+type Override = { size_mode: SizeMode; size_value: number; leverage: number };
+type Run = { label: string; r: PortfolioResult };
+
+/** 這次回測用的下單規則，寫成一句話（各策略不同時寫「照各策略」） */
+function sizingLabel(r: PortfolioResult): string {
+  const kinds = new Set(r.legs.map((l) => `${l.size_mode}|${l.size_value}|${l.leverage}`));
+  if (kinds.size !== 1) return "照各策略的下單設定";
+  const l = r.legs[0];
+  const what = l.size_mode === "fixed" ? `每筆 ${fmtNum(l.size_value, 0)} USDT` : `${l.size_mode === "equity" ? "總權益" : "可用資金"} ${l.size_value}%`;
+  return `${what} × ${l.leverage} 倍`;
+}
 
 const fmtDate = (t: number | null) => (t === null ? "—" : new Date(t * 1000).toLocaleDateString("zh-TW"));
 
@@ -15,11 +27,15 @@ export function PortfolioBacktest({ configs }: { configs: StrategyConfig[] }) {
   const [bars, setBars] = useState(3000);
   const [equity, setEquity] = useState(10000);
   const [breaker, setBreaker] = useState(true);
+  const [override, setOverride] = useState<Override | null>(null); // null = 照各策略自己的下單設定
+  const [runs, setRuns] = useState<Run[]>([]); // 這次開啟頁面後跑過的結果，方便比較
   const run = useMutation({
     mutationFn: () => api<PortfolioResult>("/api/strategies/portfolio-backtest", {
-      method: "POST", body: JSON.stringify({ ids, bars, start_equity: equity, breaker }),
+      method: "POST", body: JSON.stringify({ ids, bars, start_equity: equity, breaker, ...(override ?? {}) }),
     }),
+    onSuccess: (r) => setRuns((xs) => [{ label: sizingLabel(r), r }, ...xs].slice(0, 8)),
   });
+  const setOv = <K extends keyof Override>(k: K, v: Override[K]) => override && setOverride({ ...override, [k]: v });
   const toggle = (id: number) => setPicked(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
   const dd = bot.data?.max_drawdown_pct ?? 0;
 
@@ -44,6 +60,28 @@ export function PortfolioBacktest({ configs }: { configs: StrategyConfig[] }) {
         <label className="field">起始資金（USDT）<input type="number" min={1} step="any" value={equity} onChange={(e) => setEquity(Number(e.target.value))} />
           <small>所有勾選的策略共用這筆資金</small></label>
       </div>
+      <div className="form-grid" style={{ marginTop: 4 }}>
+        <label className="field">下單設定
+          <select value={override ? "custom" : "own"} onChange={(e) => setOverride(e.target.value === "own" ? null : { size_mode: "equity", size_value: 11, leverage: 2 })}>
+            <option value="own">照各策略自己的設定</option><option value="custom">這次統一用…（不改策略）</option>
+          </select>
+        </label>
+        {override && (
+          <>
+            <label className="field">計算方式
+              <select value={override.size_mode} onChange={(e) => setOv("size_mode", e.target.value as SizeMode)}>
+                {SIZE_MODES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+              </select>
+            </label>
+            <label className="field">{sizeLabel(override.size_mode)}
+              <input type="number" min={0} step="any" value={override.size_value} onChange={(e) => setOv("size_value", Number(e.target.value))} />
+            </label>
+            <label className="field">槓桿（倍）
+              <input type="number" min={1} max={125} step={1} value={override.leverage} onChange={(e) => setOv("leverage", Number(e.target.value))} />
+            </label>
+          </>
+        )}
+      </div>
       <label className="check">
         <input type="checkbox" checked={breaker} onChange={(e) => setBreaker(e.target.checked)} />
         套用回撤熔斷（設定頁 {dd > 0 ? `${dd}%` : "未啟用"}）：權益從最高點回撤超過上限就全部平倉、停止交易
@@ -55,6 +93,7 @@ export function PortfolioBacktest({ configs }: { configs: StrategyConfig[] }) {
         <span className="muted" style={{ fontSize: 12 }}>不模擬強平；資金費在平倉時入帳</span>
       </div>
       {run.isError && <p className="error-text">{(run.error as Error).message}</p>}
+      {runs.length > 1 && <RunCompare runs={runs} />}
       {run.data && <PortfolioView r={run.data} />}
     </div>
   );
@@ -70,7 +109,7 @@ function PortfolioView({ r }: { r: PortfolioResult }) {
   return (
     <div className="grid" style={{ marginTop: 16 }}>
       <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-        {fmtDate(s.from)} ～ {fmtDate(s.to)}，起始 {fmtNum(s.start_equity)} USDT。
+        {fmtDate(s.from)} ～ {fmtDate(s.to)}，起始 {fmtNum(s.start_equity)} USDT，{sizingLabel(r)}。
         {skipped.length > 0 && ` 跳過的訊號：${skipped.map(([k, v]) => `${k} ${v} 次`).join("、")}。`}
       </p>
       {s.stopped_at !== null && (
@@ -94,6 +133,37 @@ function PortfolioView({ r }: { r: PortfolioResult }) {
               <td className={`num ${pnlClass(x.net)}`}>{fmtSigned(x.net)}</td>
             </tr>
           ))}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** 這次開啟頁面後跑過的組合回測並排比較（最新的在上面）。 */
+function RunCompare({ runs }: { runs: Run[] }) {
+  const d = (t: number | null) => fmtDate(t);
+  return (
+    <div style={{ marginTop: 16 }}>
+      <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>比較（這次開啟頁面後跑過的）</h3>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>下單設定</th><th>期間</th><th className="num">策略</th><th className="num">總報酬</th><th className="num">年化</th><th className="num">最大回撤</th><th className="num">年化 ÷ 回撤</th><th className="num">平均曝險</th><th>熔斷</th></tr></thead>
+          <tbody>{runs.map(({ label, r }, i) => {
+            const s = r.stats;
+            return (
+              <tr key={i}>
+                <td>{label}{i === 0 && <span className="badge" style={{ marginLeft: 6 }}>最新</span>}</td>
+                <td className="muted">{d(s.from)} ～ {d(s.to)}</td>
+                <td className="num">{r.legs.length}</td>
+                <td className={`num ${pnlClass(s.total_return)}`}>{fmtSigned(s.total_return * 100, 1)}%</td>
+                <td className={`num ${s.cagr === null ? "" : pnlClass(s.cagr)}`}>{s.cagr === null ? "—" : `${fmtSigned(s.cagr * 100, 1)}%`}</td>
+                <td className="num">{fmtPct(s.max_drawdown)}</td>
+                <td className="num">{s.cagr === null || s.max_drawdown === 0 ? "—" : fmtNum(s.cagr / s.max_drawdown, 2)}</td>
+                <td className="num">{fmtNum(s.avg_exposure, 2)} 倍</td>
+                <td>{s.stopped_at !== null ? <span className="error-text">觸發</span> : <span className="muted">—</span>}</td>
+              </tr>
+            );
+          })}</tbody>
         </table>
       </div>
     </div>

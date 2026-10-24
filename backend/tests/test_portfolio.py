@@ -111,3 +111,9 @@ async def test_portfolio_api_uses_enabled_live_strategies(env, monkeypatch):  # 
     d2 = c.post("/api/strategies/portfolio-backtest", json={"ids": [1, 2, 3], "bars": 500}).json()
     assert len(d2["legs"]) == 3
     assert c.post("/api/strategies/portfolio-backtest", json={"ids": [99]}).status_code == 422
+    # 這次回測統一用別的下單規則：不改策略本身；部位加倍 → 損益變大（虧損會複利縮小本金，所以不到兩倍）
+    big = c.post("/api/strategies/portfolio-backtest", json={"bars": 500, "size_value": 100, "leverage": 2}).json()
+    assert big["legs"][0]["size_mode"] == "equity" and big["legs"][0]["size_value"] == 100 and big["legs"][0]["leverage"] == 2
+    assert abs(big["legs"][0]["net"]) > abs(d["legs"][0]["net"]) * 1.2
+    async with sf() as s:
+        assert (await s.get(StrategyConfig, 1)).size_value == 50

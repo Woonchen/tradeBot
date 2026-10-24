@@ -340,6 +340,10 @@ class PortfolioBody(BaseModel):
     bars: int = Field(3000, ge=100, le=20000)  # 每個策略各自週期的 K 棒數
     start_equity: float = Field(10_000, gt=0)
     breaker: bool = True  # 照「設定」頁的回撤熔斷
+    # 只用在這次回測、統一套到所有策略（不改策略本身）；沒填的照各策略自己的下單規則
+    size_mode: Literal["fixed", "percent", "equity"] | None = None
+    size_value: float | None = Field(None, gt=0)
+    leverage: int | None = Field(None, ge=1, le=125)
 
 
 _portfolio_lock = asyncio.Lock()
@@ -370,6 +374,9 @@ async def portfolio_backtest(
             if len(candles) - warm < 50:
                 raise HTTPException(422, f"「{cfg.name}」歷史 K 線不足")
             rules = order_rules(bot, cfg)
+            for f in ("size_mode", "size_value", "leverage"):
+                if getattr(body, f) is not None:
+                    setattr(rules, f, getattr(body, f))
             # 每筆部位價值固定 1 USDT：得到「每 1 USDT」的淨損益，部位大小交給 run_portfolio 依共用帳戶計算
             res = run_backtest(
                 strat, candles, market=cfg.market, size_mode="fixed", size_value=1, leverage=1, start_equity=1e9,
@@ -380,7 +387,9 @@ async def portfolio_backtest(
                             rules.leverage, candles[warm:], res.trades))
         out = run_portfolio(legs, start_equity=body.start_equity, max_open=bot.max_open_positions,
                             max_drawdown_pct=bot.max_drawdown_pct if body.breaker else 0)
-    return {"stats": out.stats, "equity": out.equity, "legs": out.legs,
+    return {"stats": out.stats, "equity": out.equity,
+            "legs": [{**x, "size_mode": lg.size_mode, "size_value": lg.size_value, "leverage": lg.leverage}
+                     for x, lg in zip(out.legs, legs)],
             "rules": {"max_open_positions": bot.max_open_positions,
                       "max_drawdown_pct": bot.max_drawdown_pct if body.breaker else 0}}
 
