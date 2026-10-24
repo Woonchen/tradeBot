@@ -8,9 +8,10 @@ from sqlalchemy import select
 
 from ..engine import shadow
 from ..engine.executor import Executor, get_open_position
+from ..engine.performance import owner_of
 from ..engine.risk import load_bot_settings
 from ..exchange.base import UnknownSymbol
-from ..models import ShadowTrade, StrategyConfig, utcnow
+from ..models import ShadowTrade, Signal, StrategyConfig, Trade, utcnow
 from ..strategies import INTERVAL_SECONDS, build_strategy, for_market
 from ..strategies.history import fetch_candles
 
@@ -20,6 +21,8 @@ SIDE_ZH = {"long": "多", "short": "空"}
 CHECK_EVERY = 5  # 秒
 CLOSE_DELAY = 3  # K 棒收盤後等幾秒再抓，讓交易所資料就緒
 RETRY_AFTER_ERROR = 30
+RECONCILE_EVERY = 60  # 秒：多久比對一次策略判斷和實際持倉
+MAX_RETRIES = 3
 
 
 class StrategyRunner:
@@ -28,6 +31,8 @@ class StrategyRunner:
         self.sentiment = sentiment  # 規則用到恐懼貪婪、資金費率時，由它載入資料
         self.bus = executor.bus
         self._next_check: dict[int, float] = {}
+        self._next_reconcile: dict[int, float] = {}
+        self._retries: dict[tuple, int] = {}  # 同一件事補送了幾次（重啟後歸零）
 
     def reset(self, config_id: int):
         """設定改變後立刻重新評估。"""
@@ -46,9 +51,14 @@ class StrategyRunner:
             configs = (await s.scalars(select(StrategyConfig).where(StrategyConfig.enabled.is_(True)))).all()
         now = time.time()
         for cfg in configs:
-            if now < self._next_check.get(cfg.id, 0):
-                continue
-            await self.evaluate(cfg.id)
+            if now >= self._next_check.get(cfg.id, 0):
+                await self.evaluate(cfg.id)
+            if now >= self._next_reconcile.get(cfg.id, 0):
+                self._next_reconcile[cfg.id] = now + RECONCILE_EVERY
+                try:
+                    await self.reconcile(cfg.id)
+                except Exception:
+                    log.exception("strategy %s reconcile failed", cfg.id)
 
     async def evaluate(self, config_id: int):
         async with self.ex.sf() as s:
@@ -176,3 +186,95 @@ class StrategyRunner:
             await self.bus.emit("strategy", cfg.to_dict())
         for m in done:
             await self.bus.emit("strategy", cfg.to_dict(), category="signal", message=f"{head}（虛擬）{m}")
+
+    # ------------------------------------------------------------ 判斷和持倉不一致時補救
+    async def reconcile(self, config_id: int):
+        """策略只在判斷「改變」時送一次訊號；那次沒成功時，在這裡補救：
+
+        - 判斷是空手，帳上卻還有這個策略開的部位（平倉失敗、或當時被擋）：補送平倉。
+        - 最近一次訊號因為系統錯誤（failed，例如網路、交易所暫時錯誤）沒開成：重試。
+          被風控規則拒絕的（rejected，例如持倉上限、Bot 停用）不重試；停損停利出場後也不會重新進場。
+        每件事最多補 MAX_RETRIES 次，之後只記錄錯誤，等人處理。
+        """
+        async with self.ex.sf() as s:
+            cfg = await s.get(StrategyConfig, config_id)
+            if not cfg or not cfg.enabled or cfg.mode != "live" or cfg.last_target is None:
+                return
+            adapter = self.ex.adapters.get(cfg.market)
+            if adapter is None:
+                return
+            symbol = await adapter.resolve_symbol(cfg.symbol)
+            last = await last_signal(s, cfg.id)
+            if last is not None and last.status == "accepted":  # 還在處理中
+                return
+            pos = await get_open_position(s, symbol, cfg.market)
+            target = cfg.last_target
+
+            if target == "flat":
+                if pos is None or owner_of(await opening_signal(s, pos.id)) != ("strategy", cfg.id):
+                    return
+                key, why = (cfg.id, "close", pos.id), f"判斷是空手，但帳上還有它開的 {pos.symbol} {pos.side} 部位"
+                raw = {"strategy_id": cfg.id, "strategy": cfg.strategy, "interval": cfg.interval,
+                       "bar_time": cfg.last_bar_time, "from": pos.side, "to": "flat", "reconcile": True}
+            else:
+                if last is None or last.status != "failed" or last.target != target:
+                    return
+                if pos is not None and pos.side == target:
+                    return
+                if pos is None and await holding_on_exchange(adapter, symbol):
+                    # 上次可能其實有成交（例如逾時），只是帳本沒記到：不重試，避免開出第二個部位
+                    key = (cfg.id, "held", last.id)
+                    if key not in self._retries:
+                        self._retries[key] = 1
+                        await self.bus.emit(
+                            "strategy", cfg.to_dict(), level="error", category="system", notify=True,
+                            message=f"策略「{cfg.name}」上次開倉沒有成功，但交易所上已經有 {symbol} 的部位，"
+                            "可能其實有成交。為避免重複開倉不自動重試，請到交易所確認",
+                        )
+                    return
+                raw = dict(last.raw_payload or {})
+                key, why = (cfg.id, "open", raw.get("bar_time"), target), f"上次{SIDE_ZH[target]}單沒有成功（{last.reject_reason}）"
+
+        n = self._retries.get(key, 0) + 1
+        self._retries[key] = n
+        if n > MAX_RETRIES:
+            if n == MAX_RETRIES + 1:
+                await self.bus.emit(
+                    "strategy", cfg.to_dict(), level="error", category="system", notify=True,
+                    message=f"策略「{cfg.name}」{why}，已補送 {MAX_RETRIES} 次仍未成功，不再自動補送，請手動處理",
+                )
+            return
+        await self.bus.emit(
+            "strategy", cfg.to_dict(), level="warn", category="signal",
+            message=f"策略「{cfg.name}」{why}，補送{'平倉' if target == 'flat' else '開倉'}（第 {n} 次）",
+        )
+        await self.ex.submit(
+            source="strategy", strategy=cfg.name, ticker=cfg.symbol, market=cfg.market, action=target, target=target,
+            raw=raw | {"retry": n}, dedupe_key=f"strategy:{cfg.id}:{'/'.join(map(str, key[1:]))}:retry{n}",
+        )
+
+
+async def last_signal(s, strategy_id: int) -> Signal | None:
+    """這個策略最近送出的訊號。"""
+    recent = (await s.scalars(
+        select(Signal).where(Signal.source == "strategy").order_by(Signal.id.desc()).limit(200)
+    )).all()
+    return next((x for x in recent if (x.raw_payload or {}).get("strategy_id") == strategy_id), None)
+
+
+async def opening_signal(s, position_id: int) -> Signal | None:
+    """開這個部位的那筆成交，是哪個訊號送的。"""
+    t = await s.scalar(
+        select(Trade).where(Trade.position_id == position_id).order_by(Trade.executed_at, Trade.id).limit(1)
+    )
+    return await s.get(Signal, t.signal_id) if t and t.signal_id else None
+
+
+async def holding_on_exchange(adapter, symbol: str) -> bool:
+    """交易所上這個交易對是否已有部位（合約看持倉；現貨看有沒有超過最小下單金額的幣）。"""
+    remote = await adapter.fetch_positions()
+    if remote is not None:
+        return any(p.symbol == symbol and p.qty > 0 for p in remote)
+    wallet = await adapter.fetch_wallet()
+    base = adapter.base_asset(symbol)
+    return any(a.asset == base and a.usdt_value >= adapter.min_notional(symbol) for a in wallet.assets)

@@ -132,12 +132,15 @@ class Executor:
             raise Reject(f"不支援的市場：{sig.market}")
         cfg = await load_bot_settings(s)
 
-        if sig.source in ("tradingview", "strategy"):  # 自動訊號才受 Bot 開關與白名單限制
-            if not cfg.enabled:
-                raise Reject("Bot 已停用")
+        # 自動訊號的開倉受 Bot 開關與白名單限制；平倉一律放行，
+        # 否則 Bot 停用（手動或觸發每日虧損上限）後，已經開的部位會沒人能平
+        blocked = None
+        if sig.source in ("tradingview", "strategy"):
             allowed = {normalize_ticker(x) for x in cfg.symbols or []}
-            if allowed and normalize_ticker(sig.ticker) not in allowed:
-                raise Reject(f"{sig.ticker} 不在允許交易清單內")
+            if not cfg.enabled:
+                blocked = "Bot 已停用"
+            elif allowed and normalize_ticker(sig.ticker) not in allowed:
+                blocked = f"{sig.ticker} 不在允許交易清單內"
 
         try:
             symbol = await adapter.resolve_symbol(sig.ticker)
@@ -154,6 +157,11 @@ class Executor:
             raise Reject(f"目前部位已經是 {current}，不需動作")
 
         opening = sig.target != "flat"
+        if opening and blocked:
+            if pos is None:
+                raise Reject(blocked)
+            await self._close_position(s, sig, adapter, pos)  # 反手：只平倉，不開新倉
+            raise Reject(f"已平倉，但{blocked}，不開新倉")
         if opening:
             # 先檢查開倉風控，避免「平倉成功但反手被擋」的半套狀態
             await check_open_risk(s, cfg, closing_one=pos is not None)
@@ -270,6 +278,16 @@ class Executor:
         )
         try:
             res = await adapter.create_market_order(symbol, side, qty, order.client_order_id, reduce_only)
+        except ccxt.NetworkError as e:
+            # 連線問題（逾時、交易所暫時無法服務）：單子可能其實有送到。標成 unknown、訊號記為 failed，
+            # 策略的補救程序會先確認交易所上沒有部位才重試（見 workers/strategy_runner.py 的 reconcile）
+            order.status, order.error = "unknown", str(e)
+            await s.commit()
+            await self.bus.emit(
+                "order_update", order.to_dict(), level="error", category="order", signal_id=sig.id,
+                order_id=order.id, message=f"訂單 #{order.id} 送出時連線失敗，不確定是否成交：{e}",
+            )
+            raise
         except ccxt.BaseError as e:
             order.status, order.error = "rejected", str(e)
             await s.commit()
