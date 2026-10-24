@@ -109,3 +109,24 @@ def test_rule_blocks_entry_when_retail_crowded():
     assert s.targets(candles) == ["flat", "long", "flat", "long"]
     s.ext = {}  # 沒資料：不進場
     assert set(s.targets(candles)) == {"flat"}
+
+
+def test_explain_reports_each_condition_at_last_bar():
+    close = {"kind": "price", "field": "close"}
+    rules = {"rules": {
+        "long_entry": {"logic": "and", "conditions": [
+            {"left": close, "cmp": ">", "right": {"kind": "sma", "length": 2, "source": "close"}},
+            {"left": {"kind": "long_short"}, "cmp": "<=", "right": {"kind": "value", "value": 2.0}}]},
+        "long_exit": {"logic": "or", "conditions": [{"left": close, "cmp": "<", "right": {"kind": "sma", "length": 2, "source": "close"}}]},
+    }}
+    s = build_strategy("rules", rules)
+    candles = [Candle(T0 + i * 4 * H, c, c, c, c, 1) for i, c in enumerate([10, 10, 13])]
+    s.ext = {"long_short": [(T0 + 3 * 4 * H - 300, 3.27)]}
+    e = s.explain(candles)
+    assert e["bar_time"] == candles[-1].time and set(e["groups"]) == {"long_entry", "long_exit"}
+    entry = e["groups"]["long_entry"]
+    assert entry["met"] is False and entry["logic"] == "and"
+    price, ls = entry["conditions"]
+    assert (price["left"], price["right"], price["ok"], price["price_scale"]) == ("收盤", "SMA2", True, True)
+    assert price["left_value"] == 13 and price["right_value"] == 11.5
+    assert (ls["left"], ls["right"], ls["left_value"], ls["ok"], ls["price_scale"]) == ("散戶多空比", "2", 3.27, False, False)

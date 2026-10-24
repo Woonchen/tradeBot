@@ -254,3 +254,16 @@ label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; col
 .rb-join { font-size: 12px; font-weight: 600; color: var(--accent); min-width: 16px; }
 .rb-empty { font-size: 12px; }
 .rb-group > .btn { justify-self: start; }
+
+/* 策略狀態：各條件是否成立（✓／✗ 加上文字，不只靠顏色），放在每個策略下方的全寬列 */
+tr.has-detail > td { border-bottom: none; padding-bottom: 2px; }
+tr.detail-row > td { padding-top: 0; font-size: 12px; white-space: normal; }
+.cond-groups { display: flex; flex-direction: column; gap: 2px; }
+.cond-group { display: flex; flex-wrap: wrap; column-gap: 14px; row-gap: 2px; align-items: baseline; }
+.cond { line-height: 1.6; white-space: nowrap; }
+.cond.ok > span:first-child { color: var(--up-text); }
+.cond.no > span:first-child { color: var(--down-text); }
+@media (max-width: 720px) {
+  /* 表格比螢幕寬（可左右捲）時，條件那一列固定在可見範圍內換行，不用捲動才看得到 */
+  .cond-groups { position: sticky; left: 10px; max-width: calc(100vw - 110px); }
+}

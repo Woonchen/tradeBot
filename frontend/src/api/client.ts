@@ -179,3 +179,12 @@ export interface BacktestResult {
   /** 要求驗證更早期間時的結果；歷史不夠時是 null */
   earlier: BacktestStats | null;
 }
+
+/** 策略最後一根 K 棒各條件的狀態（GET /api/strategies/checks） */
+export interface ConditionCheck {
+  left: string; cmp: string; right: string; left_value: number | null; right_value: number | null; ok: boolean; price_scale: boolean;
+}
+export interface StrategyCheck {
+  bar_time: number | null;
+  groups: Partial<Record<"long_entry" | "long_exit" | "short_entry" | "short_exit", { logic: "and" | "or"; met: boolean; conditions: ConditionCheck[] }>>;
+}

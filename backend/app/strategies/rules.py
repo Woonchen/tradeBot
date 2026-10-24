@@ -269,6 +269,21 @@ def _name(op: dict) -> str:
     return _ZH.get(k, k)
 
 
+_PRICE_ZH = {"close": "收盤", "open": "開盤", "high": "最高", "low": "最低"}
+
+
+def _label(op: dict) -> str:
+    if op["kind"] == "value":
+        return f"{op['value']:g}"
+    if op["kind"] == "price":
+        return _PRICE_ZH.get(op["field"], op["field"])
+    return _name(op)
+
+
+def _is_price(op: dict) -> bool:
+    return op["kind"] == "price" or op["kind"] in _ON_PRICE
+
+
 @register
 class RuleStrategy(Strategy):
     key = "rules"
@@ -319,6 +334,28 @@ class RuleStrategy(Strategy):
                 group = _SUB_GROUP[op["kind"]]
                 out.append(plot(_name(op), values, "sub", group, sorted(levels.get(group, []))))
         return out
+
+    def explain(self, candles: list[Candle]) -> dict:
+        """最後一根 K 棒每個條件的數值與是否成立，給「策略狀態」顯示「為什麼還沒進場／出場」。"""
+        r = self.p["rules"]
+        cache: dict = {"__ext__": getattr(self, "ext", {})}
+        i = len(candles) - 1
+        groups = {}
+        for g in ("long_entry", "long_exit", "short_entry", "short_exit"):
+            conds = r[g]["conditions"]
+            if not conds:
+                continue
+            rows = []
+            for c in conds:
+                a, b = compute(c["left"], candles, cache), compute(c["right"], candles, cache)
+                rows.append({
+                    "left": _label(c["left"]), "cmp": c["cmp"], "right": _label(c["right"]),
+                    "left_value": a[i], "right_value": b[i], "ok": _check(c, i, candles, cache),
+                    # 兩邊都是價格尺度（例如 收盤 vs SMA）時，前端顯示還差幾 %
+                    "price_scale": all(_is_price(op) for op in (c["left"], c["right"])),
+                })
+            groups[g] = {"logic": r[g]["logic"], "met": _group(r[g], i, candles, cache), "conditions": rows}
+        return {"bar_time": candles[i].time if candles else None, "groups": groups}
 
     def targets(self, candles: list[Candle]) -> list[Target]:
         r = self.p["rules"]

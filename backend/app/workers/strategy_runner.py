@@ -33,6 +33,7 @@ class StrategyRunner:
         self._next_check: dict[int, float] = {}
         self._next_reconcile: dict[int, float] = {}
         self._retries: dict[tuple, int] = {}  # 同一件事補送了幾次（重啟後歸零）
+        self.checks: dict[int, dict] = {}  # 每個策略最後一根 K 棒各條件的狀態（給「策略狀態」顯示）
 
     def reset(self, config_id: int):
         """設定改變後立刻重新評估。"""
@@ -76,6 +77,8 @@ class StrategyRunner:
                 if len(candles) < 2:
                     raise RuntimeError("K 線資料不足")
                 bar = candles[-1]
+                if hasattr(strat, "explain"):
+                    self.checks[cfg.id] = strat.explain(candles)
                 cfg.last_run_at, cfg.last_error = utcnow(), None
                 # 下一次檢查：下一根 K 棒收盤後
                 self._next_check[cfg.id] = bar.time + 2 * sec + CLOSE_DELAY

@@ -153,6 +153,12 @@ async def performance(s: AsyncSession = Depends(get_session), ex: Executor = Dep
     return {"strategies": result, "others": others}
 
 
+@router.get("/checks")
+async def checks(request: Request):
+    """啟用中策略最後一根 K 棒的各條件狀態（策略執行時算好的；後端重啟後要等第一次判斷）。"""
+    return {str(k): v for k, v in _runner(request).checks.items()}
+
+
 @router.get("")
 async def list_configs(s: AsyncSession = Depends(get_session)):
     return [c.to_dict() for c in (await s.scalars(select(StrategyConfig).order_by(StrategyConfig.id))).all()]
