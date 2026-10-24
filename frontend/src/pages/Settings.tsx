@@ -3,7 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { api, type BotSettings } from "../api/client";
 import { fmtNum } from "../format";
 
-type Form = Omit<BotSettings, "execution_mode" | "testnet" | "symbols"> & { symbols: string };
+type Form = Omit<BotSettings, "execution_mode" | "testnet" | "symbols" | "drawdown"> & { symbols: string };
 
 /** 一列設定：左邊欄位名稱 + 說明，右邊輸入框。 */
 function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
@@ -67,7 +67,7 @@ export function Settings() {
       api<BotSettings>("/api/bot", {
         method: "PUT",
         body: JSON.stringify({
-          ...f,
+          ...f, drawdown: undefined,
           symbols: f.symbols.split(/[,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean),
         }),
       }),
@@ -98,13 +98,15 @@ export function Settings() {
         <Section title="每筆下單金額" desc="每次開倉投入多少保證金。現貨不使用槓桿，投入金額即買入金額。">
           <Field label="計算方式">
             <Seg value={form.size_mode} onChange={(v) => set("size_mode", v)}
-              options={[["fixed", "固定金額"], ["percent", "可用餘額百分比"]]} />
+              options={[["fixed", "固定金額"], ["percent", "可用餘額 %"], ["equity", "總權益 %"]]} />
           </Field>
           <Field
-            label={fixed ? "每筆保證金" : "每筆使用可用餘額"}
+            label={fixed ? "每筆保證金" : form.size_mode === "equity" ? "每筆使用總權益" : "每筆使用可用餘額"}
             hint={fixed
               ? `合約部位價值 = ${fmtNum(form.size_value, 2)} × ${lev} 倍 = ${fmtNum(form.size_value * lev, 2)} USDT`
-              : `開倉當下可用 USDT 的 ${fmtNum(form.size_value, 2)}%，合約部位價值再乘以 ${lev} 倍槓桿`}
+              : form.size_mode === "equity"
+                ? `開倉當下帳戶總權益（含其他部位的保證金與未實現損益）的 ${fmtNum(form.size_value, 2)}%，再乘以 ${lev} 倍槓桿。多個策略同時持倉時每個分到一樣多；可用餘額不夠時用剩下的進場`
+                : `開倉當下可用 USDT 的 ${fmtNum(form.size_value, 2)}%，合約部位價值再乘以 ${lev} 倍槓桿`}
           >
             <NumInput value={form.size_value} unit={fixed ? "USDT" : "%"} min={0} onChange={(v) => set("size_value", v)} />
           </Field>
@@ -126,6 +128,18 @@ export function Settings() {
           </Field>
           <Field label="每日虧損上限" hint="當日（UTC 0 點起算）已實現損益扣手續費後虧損達此金額，自動停用 Bot">
             <NumInput value={form.max_daily_loss_usdt} unit="USDT" min={0} onChange={(v) => set("max_daily_loss_usdt", v)} />
+          </Field>
+          <Field label="回撤熔斷" hint={<>
+            權益從最高點回撤超過此比例，<strong>平掉所有持倉</strong>並停用 Bot。現貨、合約分開計算；連續兩次（約 2 分鐘）都超過才觸發。0 = 不啟用。
+            重新啟用 Bot 時，最高點從當下重新記錄。轉帳、出金也會被算成回撤。
+            {bot.data.drawdown.map((x) => (
+              <span key={x.market} style={{ display: "block", marginTop: 4 }}>
+                {x.market === "futures" ? "合約" : "現貨"}：最高點 {fmtNum(x.peak, 2)} USDT，目前 {x.equity === null ? "—" : fmtNum(x.equity, 2)}
+                {x.drawdown_pct !== null && `，回撤 ${fmtNum(Math.max(x.drawdown_pct, 0), 1)}%`}
+              </span>
+            ))}
+          </>}>
+            <NumInput value={form.max_drawdown_pct} unit="%" min={0} max={99} onChange={(v) => set("max_drawdown_pct", v)} />
           </Field>
         </Section>
 

@@ -60,3 +60,10 @@ export const livePnl = (
   price === undefined
     ? { mark: p.mark_price, pnl: p.unrealized_pnl }
     : { mark: price, pnl: (price - p.entry_price) * p.qty * (p.side === "long" ? 1 : -1) };
+
+/** 下單金額的計算方式（設定頁、策略編輯、回測共用） */
+export const SIZE_MODES = [["fixed", "每筆固定 USDT"], ["percent", "可用資金 %"], ["equity", "總權益 %"]] as const;
+export const sizeLabel = (mode: string) =>
+  mode === "fixed" ? "每筆保證金（USDT）" : mode === "equity" ? "每筆使用總權益（%）" : "每筆使用可用資金（%）";
+export const sizeText = (mode: string, value: number) =>
+  mode === "fixed" ? `每筆 ${fmtNum(value)} USDT 保證金` : mode === "equity" ? `每筆用總權益的 ${value}%` : `每筆用可用資金 ${value}%`;

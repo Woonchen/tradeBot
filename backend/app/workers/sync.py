@@ -7,10 +7,13 @@ from sqlalchemy import select
 
 from ..engine.executor import Executor
 from ..engine.ledger import LedgerState, apply_fill
+from ..engine.risk import load_bot_settings, update_peaks
 from ..models import BalanceSnapshot, EquitySnapshot, Order, Position, Trade, utcnow
 from ..services.market_stream import MarketHub
 
 log = logging.getLogger(__name__)
+
+MARKET_ZH = {"spot": "現貨", "futures": "合約"}
 
 
 async def every(seconds: int, fn, name: str):
@@ -29,6 +32,7 @@ class SyncWorkers:
         self.sf = executor.sf
         self.bus = executor.bus
         self._warned: set[str] = set()
+        self._breaches = 0  # 連續幾次快照超過回撤上限
 
     # ------------------------------------------------------------ 餘額
     async def snapshot_balances(self):
@@ -49,7 +53,27 @@ class SyncWorkers:
             )
             s.add(snap)
             await s.commit()
+            await self._check_drawdown(s, equity, now)
         await self.bus.emit("balance_update", snap.to_dict())
+
+    async def _check_drawdown(self, s, equity: dict[str, float], now):
+        """回撤熔斷：權益從最高點回撤超過上限，就全部平倉並停用 Bot。
+
+        要連續兩次快照都超過才觸發，避免交易所偶爾回傳一筆異常的餘額就誤平倉。
+        """
+        cfg = await load_bot_settings(s)
+        breached = update_peaks(cfg, equity, now)
+        await s.commit()
+        self._breaches = self._breaches + 1 if breached and cfg.enabled else 0
+        if self._breaches < 2:
+            return
+        self._breaches = 0
+        detail = "、".join(f"{MARKET_ZH.get(m, m)}權益 {now_v:.2f} USDT，比最高點 {peak:.2f} 回撤 {(1 - now_v / peak) * 100:.1f}%"
+                          for m, peak, now_v in breached)
+        await self.ex.close_all(
+            s, cfg, f"觸發回撤熔斷：{detail}，超過上限 {cfg.max_drawdown_pct:g}%。已送出全部平倉（{{n}} 個部位），Bot 已停用",
+            level="error",
+        )
 
     # ------------------------------------------------------------ 部位
     async def sync_positions(self):

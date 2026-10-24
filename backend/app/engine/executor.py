@@ -180,6 +180,19 @@ class Executor:
             )
         return True
 
+    async def close_all(self, s: AsyncSession, cfg, message: str, level: str = "warn") -> list[int]:
+        """停用 Bot，並把所有持倉送出平倉訊號（手動來源，不受 Bot 開關限制）。"""
+        cfg.enabled = False
+        await s.commit()
+        positions = (await s.scalars(select(Position).where(Position.closed_at.is_(None)))).all()
+        await self.bus.emit("bot", cfg.to_dict(), level=level, category="risk", notify=True,
+                            message=message.format(n=len(positions)))
+        ids = []
+        for p in positions:
+            sig, _ = await self.submit(source="manual", ticker=p.symbol, market=p.market, action="close", target="flat")
+            ids.append(sig.id)
+        return ids
+
     async def _close_position(self, s: AsyncSession, sig: Signal, adapter: ExchangeAdapter, pos: Position):
         qty = pos.qty
         if adapter.market == "spot":
@@ -210,7 +223,11 @@ class Executor:
         lev = cfg.leverage if adapter.market == "futures" else 1
         price = await adapter.fetch_price(symbol)
         wallet = await adapter.fetch_wallet()
-        margin, raw_qty = compute_order_size(cfg.size_mode, cfg.size_value, lev, wallet.free_usdt, price)
+        margin, raw_qty = compute_order_size(cfg.size_mode, cfg.size_value, lev, wallet.free_usdt, price, wallet.equity_usdt)
+        if cfg.size_mode == "equity" and margin > wallet.free_usdt * 0.99:
+            # 權益 % 加總接近 100% 時，最後一個可能差一點點（手續費、未實現獲利不算可用）：用剩下的進場，不要整筆錯過
+            margin = wallet.free_usdt * 0.99
+            raw_qty = margin * lev / price
         if margin > wallet.free_usdt:
             raise Reject(f"可用餘額不足：需要 {margin:.2f} USDT，可用 {wallet.free_usdt:.2f}")
         qty = adapter.amount_to_precision(symbol, raw_qty)

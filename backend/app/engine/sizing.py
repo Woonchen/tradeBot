@@ -1,8 +1,16 @@
 def compute_order_size(
-    size_mode: str, size_value: float, leverage: int, free_usdt: float, price: float
+    size_mode: str, size_value: float, leverage: int, free_usdt: float, price: float, equity_usdt: float | None = None,
 ) -> tuple[float, float]:
-    """回傳 (使用的保證金 USDT, 下單數量)。現貨 leverage 傳 1。"""
-    margin = size_value if size_mode == "fixed" else free_usdt * size_value / 100
+    """回傳 (使用的保證金 USDT, 下單數量)。現貨 leverage 傳 1。
+
+    fixed：固定 size_value USDT；percent：可用餘額的 %；equity：帳戶總權益的 %（沒給權益就用可用餘額）。
+    多個策略同時持倉時用 equity：每個策略分到的一樣多，不會因為先進場的用掉可用餘額，後面的越分越少。
+    """
+    if size_mode == "fixed":
+        margin = size_value
+    else:
+        base = equity_usdt if size_mode == "equity" and equity_usdt is not None else free_usdt
+        margin = base * size_value / 100
     if price <= 0 or margin <= 0:
         return 0.0, 0.0
     return margin, margin * max(leverage, 1) / price

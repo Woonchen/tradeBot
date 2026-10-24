@@ -2,14 +2,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   api, type BacktestResult, type BacktestStats, type BotSettings, type LivePerf, type Market, type ParamSpec, type PerformanceReport,
-  type StrategyConfig, type StrategyInfo, type SweepResult,
+  type SizeMode, type StrategyConfig, type StrategyInfo, type SweepResult,
 } from "../api/client";
 import { BacktestChart } from "../components/BacktestChart";
 import { RuleBuilder, rulesForMarket, type Rules } from "../components/RuleBuilder";
 import { EquityChart } from "../components/EquityChart";
 import { METRICS, SweepHeatmap, type Metric } from "../components/SweepHeatmap";
 import { SymbolSelect } from "../components/SymbolSelect";
-import { fmtNum, fmtPct, fmtPrice, fmtSigned, fmtTime, INTERVAL_SEC, pnlClass } from "../format";
+import { fmtNum, fmtPct, fmtPrice, fmtSigned, fmtTime, INTERVAL_SEC, pnlClass, SIZE_MODES, sizeLabel, sizeText } from "../format";
 
 const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
 const BARS = [1000, 5000, 10000, 20000];
@@ -20,7 +20,7 @@ const approxDays = (bars: number, interval: string) => {
 const fmtDate = (t: number | null) => (t === null ? "—" : new Date(t * 1000).toLocaleDateString("zh-TW"));
 
 type Sizing = {
-  size_mode: "fixed" | "percent"; size_value: number; leverage: number; start_equity: number;
+  size_mode: SizeMode; size_value: number; leverage: number; start_equity: number;
   stop_loss_pct: number; take_profit_pct: number;
 };
 const EXIT_ZH: Record<string, string> = { signal: "策略訊號", stop: "停損", take_profit: "停利", end: "回測結束" };
@@ -119,7 +119,7 @@ function BacktestView({ result, compareRequested }: { result: BacktestResult; co
     <div className="grid" style={{ marginTop: 16 }}>
       <p className="muted" style={{ margin: 0, fontSize: 12 }}>
         {fmtDate(s.from)} ～ {fmtDate(s.to)}，{s.bars} 根 K 棒；
-        {z.size_mode === "fixed" ? `每筆 ${fmtNum(z.size_value)} USDT 保證金` : `每筆用可用資金 ${z.size_value}%`}
+        {sizeText(z.size_mode, z.size_value)}
         {z.market === "futures" && ` × ${z.leverage} 倍槓桿`}{protectionText(z.stop_loss_pct, z.take_profit_pct)}，起始 {fmtNum(z.start_equity)} USDT。
         {result.warmup > 0 && ` 另外多抓前面 ${result.warmup} 根讓指標穩定，不計入結果；起點當下若已在部位內，要等判斷改變才進場（跟實際啟用一樣）。`}
         {z.market === "futures" && (s.funding_included
@@ -379,10 +379,10 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
             <>
               <label className="field">計算方式
                 <select value={eff.size_mode} onChange={(e) => set("size_mode", e.target.value as Draft["size_mode"])}>
-                  <option value="fixed">每筆固定 USDT</option><option value="percent">可用資金 %</option>
+                  {SIZE_MODES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
                 </select>
               </label>
-              <label className="field">{eff.size_mode === "fixed" ? "每筆保證金（USDT）" : "每筆使用可用資金（%）"}
+              <label className="field">{sizeLabel(eff.size_mode)}
                 <input type="number" min={0} step="any" value={eff.size_value} onChange={(e) => set("size_value", Number(e.target.value))} />
               </label>
               {d.market === "futures" && (
@@ -438,7 +438,7 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
             </select>
             {!sizing && eff && (
               <small>
-                {eff.size_mode === "fixed" ? `每筆 ${eff.size_value} USDT 保證金` : `可用資金的 ${eff.size_value}%`}
+                {sizeText(eff.size_mode, eff.size_value)}
                 {d.market === "futures" && ` × ${eff.leverage} 倍槓桿`}{protectionText(eff.stop_loss_pct, eff.take_profit_pct)}，起始 10,000 USDT
               </small>
             )}
@@ -447,10 +447,10 @@ function Editor({ catalog, initial, onDone }: { catalog: StrategyInfo[]; initial
             <>
               <label className="field">計算方式
                 <select value={sizing.size_mode} onChange={(e) => setSz("size_mode", e.target.value as Sizing["size_mode"])}>
-                  <option value="fixed">每筆固定 USDT</option><option value="percent">可用資金 %</option>
+                  {SIZE_MODES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
                 </select>
               </label>
-              <label className="field">{sizing.size_mode === "fixed" ? "每筆保證金（USDT）" : "每筆使用可用資金（%）"}
+              <label className="field">{sizeLabel(sizing.size_mode)}
                 <input type="number" min={0} step="any" value={sizing.size_value} onChange={(e) => setSz("size_value", Number(e.target.value))} />
               </label>
               {d.market === "futures" && (

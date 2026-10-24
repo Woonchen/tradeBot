@@ -32,7 +32,7 @@ class StrategyBody(BaseModel):
     enter_on_enable: bool = False  # 啟用後第一次判斷就照目前判斷進場
     mode: Literal["live", "shadow"] = "live"  # shadow：影子模式，只記錄虛擬交易、不下單
     # 這個策略自己的下單規則；None = 沿用「設定」頁（限制跟設定頁一樣）
-    size_mode: Literal["fixed", "percent"] | None = None
+    size_mode: Literal["fixed", "percent", "equity"] | None = None
     size_value: float | None = Field(None, gt=0)
     leverage: int | None = Field(None, ge=1, le=125)
     stop_loss_pct: float | None = Field(None, ge=0, lt=100)
@@ -48,7 +48,7 @@ class BacktestBody(BaseModel):
     bars: int = Field(1000, ge=50, le=20000)
     enter_on_enable: bool = False  # 回測起點就照當下判斷進場（對應策略的同名設定）
     compare_earlier: bool = False  # 同時回測緊接在前、一樣長的期間（驗證策略不是只適合最近的行情）
-    size_mode: Literal["fixed", "percent"] | None = None
+    size_mode: Literal["fixed", "percent", "equity"] | None = None
     size_value: float | None = Field(None, gt=0)
     leverage: int | None = Field(None, ge=1, le=125)
     start_equity: float = Field(10_000, gt=0)
@@ -215,7 +215,7 @@ CHANGE_LABELS = {
 }
 _WORDS = {
     "market": {"spot": "現貨", "futures": "合約"}, "mode": {"live": "實際下單", "shadow": "影子模式"},
-    "size_mode": {"fixed": "固定金額", "percent": "可用資金 %"},
+    "size_mode": {"fixed": "固定金額", "percent": "可用資金 %", "equity": "總權益 %"},
     "enabled": {True: "啟用", False: "停用"}, "enter_on_enable": {True: "開", False: "關"},
 }
 

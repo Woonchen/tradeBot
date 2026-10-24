@@ -166,7 +166,7 @@ class BotSettings(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # 允許交易的 ticker（例如 ["BTCUSDT","ETHUSDT"]）；空 = 全部允許
     symbols: Mapped[list] = mapped_column(JSON, default=list)
-    # fixed：每筆固定 size_value USDT 保證金；percent：可用 USDT 的 size_value %
+    # fixed：每筆固定 size_value USDT 保證金；percent：可用 USDT 的 size_value %；equity：帳戶總權益的 size_value %
     size_mode: Mapped[str] = mapped_column(String(8), default="fixed")
     size_value: Mapped[float] = mapped_column(Float, default=100)
     leverage: Mapped[int] = mapped_column(Integer, default=3)
@@ -176,6 +176,10 @@ class BotSettings(Base):
     # 開倉後自動掛的保護單（%，0 = 不掛），僅合約
     stop_loss_pct: Mapped[float] = mapped_column(Float, default=0)
     take_profit_pct: Mapped[float] = mapped_column(Float, default=0)
+    # 回撤熔斷：權益從最高點回撤超過這個 %，就平掉所有持倉並停用 Bot（0 = 不啟用）；現貨、合約各自計算
+    max_drawdown_pct: Mapped[float] = mapped_column(Float, default=0, server_default="0")
+    # 各市場的權益最高點，例如 {"futures": {"value": 5000.0, "ts": "..."}}；重新啟用 Bot 時清空、從當下重新記錄
+    equity_peaks: Mapped[dict | None] = mapped_column(JSON)
 
 
 class StrategyConfig(Base):
@@ -196,7 +200,7 @@ class StrategyConfig(Base):
     # live：真的下單；shadow：影子模式，只記錄虛擬交易（shadow_trades），不下單也不佔用部位
     mode: Mapped[str] = mapped_column(String(8), default="live", server_default="live")
     # 這個策略自己的下單規則；None = 沿用「設定」頁（保證金模式、持倉上限、每日虧損上限一律用設定頁）
-    size_mode: Mapped[str | None] = mapped_column(String(8))  # fixed / percent
+    size_mode: Mapped[str | None] = mapped_column(String(8))  # fixed / percent / equity
     size_value: Mapped[float | None] = mapped_column(Float)
     leverage: Mapped[int | None] = mapped_column(Integer)
     stop_loss_pct: Mapped[float | None] = mapped_column(Float)

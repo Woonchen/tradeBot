@@ -37,10 +37,15 @@ export interface Summary {
   max_drawdown: number; start_equity: number | null;
 }
 export interface BotSettings {
-  enabled: boolean; symbols: string[]; size_mode: "fixed" | "percent"; size_value: number; leverage: number;
+  enabled: boolean; symbols: string[]; size_mode: SizeMode; size_value: number; leverage: number;
   margin_mode: "isolated" | "cross"; max_open_positions: number; max_daily_loss_usdt: number;
   stop_loss_pct: number; take_profit_pct: number; execution_mode: "paper" | "binance"; testnet: boolean;
+  max_drawdown_pct: number; drawdown: DrawdownStatus[];
 }
+/** 各市場離權益最高點多遠（回撤熔斷用） */
+export interface DrawdownStatus { market: Market; peak: number; peak_at: string; equity: number | null; drawdown_pct: number | null }
+/** fixed：固定 USDT；percent：可用餘額 %；equity：帳戶總權益 % */
+export type SizeMode = "fixed" | "percent" | "equity";
 export interface SignalTrace { signal: Signal; orders: Order[]; trades: Trade[]; logs: ActivityLog[] }
 
 const TOKEN_KEY = "tradebot.token";
@@ -104,7 +109,7 @@ export interface StrategyConfig {
   /** live：真的下單；shadow：影子模式，只記錄虛擬交易 */
   mode: "live" | "shadow";
   /** 這個策略自己的下單規則；null = 沿用「設定」頁 */
-  size_mode: "fixed" | "percent" | null; size_value: number | null; leverage: number | null;
+  size_mode: SizeMode | null; size_value: number | null; leverage: number | null;
   stop_loss_pct: number | null; take_profit_pct: number | null;
   last_bar_time: number | null; last_run_at: string | null; last_error: string | null; created_at: string;
   /** 最近一次啟用（或啟用中改了設定）的時間 */
@@ -133,7 +138,7 @@ export interface BacktestStats {
   funding: number; funding_included: boolean;
 }
 export interface BacktestSizing {
-  market: Market; size_mode: "fixed" | "percent"; size_value: number; leverage: number; start_equity: number;
+  market: Market; size_mode: SizeMode; size_value: number; leverage: number; start_equity: number;
   stop_loss_pct: number; take_profit_pct: number;
 }
 export interface MetricPoint { value: number; ts: number; prev: number | null; week_ago: number | null }

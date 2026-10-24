@@ -110,6 +110,7 @@ def run_backtest(
             if side != "flat":
                 close_at(c.open, c.time, "signal")
             if want != "flat":
+                # 單一策略的回測開倉時一定空手，權益就等於現金，所以 percent 和 equity 算法相同
                 margin = size_value if size_mode == "fixed" else cash * size_value / 100
                 margin = min(margin, cash)
                 if margin > 0:

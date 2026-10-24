@@ -59,3 +59,23 @@ def order_rules(bot: BotSettings, strategy=None) -> SimpleNamespace:
         if v is not None:
             vals[f] = v
     return SimpleNamespace(**vals, margin_mode=bot.margin_mode)
+
+
+def update_peaks(cfg: BotSettings, equity: dict[str, float], now: datetime) -> list[tuple[str, float, float]]:
+    """記錄各市場的權益最高點，回傳回撤超過上限的 [(市場, 最高點, 目前權益)]。
+
+    現貨、合約分開算：Demo 帳戶的現貨裡有一大筆沒在用的 USDT，合在一起會把合約的回撤稀釋掉。
+    """
+    peaks = dict(cfg.equity_peaks or {})
+    breached = []
+    for market, value in equity.items():
+        if value <= 0:
+            continue
+        peak = peaks.get(market)
+        if peak is None or value > peak["value"]:
+            peaks[market] = {"value": value, "ts": now.isoformat()}
+        elif cfg.max_drawdown_pct > 0 and value <= peak["value"] * (1 - cfg.max_drawdown_pct / 100):
+            breached.append((market, peak["value"], value))
+    if peaks != (cfg.equity_peaks or {}):
+        cfg.equity_peaks = peaks
+    return breached
