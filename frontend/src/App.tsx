@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { api, getToken, isLive, modeLabel, setToken, type BotSettings } from "./api/client";
 import { useLiveEvents } from "./api/useLiveEvents";
+import { setGameMode, useGameMode } from "./gameMode";
 import { Login } from "./pages/Login";
 
 // 各頁按需載入：打開哪一頁才下載那一頁的程式（策略頁、K 線圖頁比較大）
@@ -29,11 +30,13 @@ function ModeBadge() {
 
 function Shell() {
   const connected = useLiveEvents();
+  const game = useGameMode();
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">📈 TradeBot</div>
         <ModeBadge />
+        <button className="btn small game-toggle" aria-pressed={game} onClick={() => setGameMode(!game)}>{game ? "🎮 遊戲模式：開" : "🎮 遊戲模式"}</button>
         <nav className="nav">
           {NAV.map(([to, label]) => <NavLink key={to} to={to} end={to === "/"}>{label}</NavLink>)}
         </nav>

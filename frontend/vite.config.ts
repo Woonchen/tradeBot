@@ -12,9 +12,12 @@ export default defineConfig({
         manualChunks: {
           react: ["react", "react-dom", "react-router-dom", "@tanstack/react-query"],
           charts: ["lightweight-charts"],
+          three: ["three"],
         },
       },
     },
+    // three.js 單獨一包約 570 kB，只在遊戲模式下載
+    chunkSizeWarningLimit: 650,
   },
   server: {
     proxy: {

@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { lazy, Suspense, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { api, type ActivityLog, type EquityPoint, type Position, type Summary } from "../api/client";
 import { useLivePrices } from "../api/liveSocket";
@@ -6,9 +7,15 @@ import { ActivityTimeline } from "../components/ActivityTimeline";
 import { EquityChart } from "../components/EquityChart";
 import { SentimentCard } from "../components/SentimentCard";
 import { StrategyStatus } from "../components/StrategyStatus";
+import { useGameMode } from "../gameMode";
 import { fmtNum, fmtPct, fmtSigned, livePnl, pnlClass } from "../format";
 import { BotControls } from "./BotControls";
 import { PositionsTable } from "./Positions";
+
+// three.js 很大：只有開了遊戲模式才下載
+const TradeArena3D = lazy(() => import("../components/TradeArena3D").then((m) => ({ default: m.TradeArena3D })));
+
+const NO_POINTS: EquityPoint[] = [];
 
 function Tile({ label, value, sub, cls }: { label: string; value: string; sub?: string; cls?: string }) {
   return (
@@ -26,6 +33,14 @@ export function Dashboard() {
   const logs = useQuery({ queryKey: ["activity", "recent"], queryFn: () => api<ActivityLog[]>("/api/activity?limit=10") });
   const positions = useQuery({ queryKey: ["positions", "open"], queryFn: () => api<Position[]>("/api/positions") });
   const prices = useLivePrices();
+  const game = useGameMode();
+  const arena = useMemo(
+    () => (positions.data ?? []).map((p) => {
+      const key = `${p.market}:${p.symbol}`;
+      return { key: `${key}:${p.id}`, position: p, ...livePnl(p, prices[key]) };
+    }),
+    [positions.data, prices],
+  );
   const unrealized = positions.data
     ? positions.data.reduce((sum, p) => sum + livePnl(p, prices[`${p.market}:${p.symbol}`]).pnl, 0)
     : summary.data?.unrealized;
@@ -38,6 +53,11 @@ export function Dashboard() {
         <h1 style={{ margin: 0 }}>總覽</h1>
         <BotControls />
       </div>
+      {game && (
+        <Suspense fallback={<div className="arena arena-loading">載入 3D 場景中…</div>}>
+          <TradeArena3D positions={arena} equity={equity.data ?? NO_POINTS} todayChange={s?.equity_change_today} />
+        </Suspense>
+      )}
       <div className="tiles">
         <Tile label="總權益 (USDT)" value={fmtNum(s?.equity)} sub={`今日 ${fmtSigned(s?.equity_change_today)}`} />
         <Tile label="今日已實現（扣手續費）" value={fmtSigned(s?.realized_today)} cls={pnlClass(s?.realized_today)} />

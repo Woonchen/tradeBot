@@ -96,7 +96,8 @@ button, input, select { font: inherit; color: inherit; }
 .brand { font-weight: 700; font-size: 18px; padding: 0 10px 16px; display: flex; align-items: center; gap: 8px; }
 .mode-badge { margin: 0 10px 12px; padding: 4px 8px; border-radius: 6px; font-size: 12px; text-align: center; background: var(--surface-2); color: var(--text-2); }
 .mode-badge.live { background: color-mix(in srgb, var(--down) 22%, var(--surface)); color: var(--down-text); font-weight: 700; border: 1px solid var(--down); }
-@media (max-width: 760px) { .mode-badge { margin: 0 8px 0 0; } }
+.game-toggle { margin: 0 10px 12px; }
+@media (max-width: 760px) { .mode-badge, .game-toggle { margin: 0 8px 0 0; } }
 .nav a { display: block; padding: 8px 10px; border-radius: 6px; color: var(--text-2); }
 .nav a.active, .nav a:hover { background: var(--surface-2); color: var(--text); }
 .sidebar-foot { margin-top: auto; padding: 10px; font-size: 12px; color: var(--text-3); display: grid; gap: 6px; }
@@ -270,3 +271,108 @@ tr.detail-row > td { padding-top: 0; font-size: 12px; white-space: normal; }
 
 /* 投資組合回測：勾選策略 */
 .pf-picks { display: flex; flex-wrap: wrap; column-gap: 18px; row-gap: 4px; }
+
+/* ---------- 遊戲模式：霓虹 HUD 主題 + 3D 持倉場景 ---------- */
+:root[data-game="on"] {
+  color-scheme: dark;
+  --bg: #050a18;
+  --surface: rgba(10, 22, 44, 0.72);
+  --surface-2: rgba(31, 182, 255, 0.10);
+  --border: rgba(31, 182, 255, 0.28);
+  --grid: rgba(31, 182, 255, 0.12);
+  --text: #e8f6ff;
+  --text-2: #9cc7e4;
+  --text-3: #6b93b3;
+  --accent: #1fb6ff;
+  --series-1: #1fb6ff;
+  --series-2: #ffb02e;
+  --series-3: #b45cff;
+  --series-4: #2fe0c8;
+  --div-pos: #1fb6ff;
+  --div-neg: #ff3d6e;
+  --div-mid: #13233d;
+  --heat-step: 12%;
+  --up: #2bff88;
+  --down: #ff3d6e;
+  --up-text: #2bff88;
+  --down-text: #ff6b8e;
+  --warn-text: #ffc24a;
+  --glow: 0 0 0 1px rgba(31, 182, 255, 0.25), 0 0 18px rgba(31, 182, 255, 0.12);
+}
+:root[data-game="on"] body {
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(80, 60, 255, 0.28), transparent 60%),
+    radial-gradient(ellipse at 100% 100%, rgba(31, 182, 255, 0.14), transparent 50%),
+    #050a18;
+  background-attachment: fixed;
+}
+/* 底部往遠方延伸的透視網格 */
+:root[data-game="on"] body::before {
+  content: ""; position: fixed; inset: auto -50% -10% -50%; height: 55vh; z-index: -1; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(31, 182, 255, 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(31, 182, 255, 0.22) 1px, transparent 1px);
+  background-size: 60px 60px;
+  transform: perspective(500px) rotateX(62deg);
+  transform-origin: 50% 100%;
+  mask-image: linear-gradient(to top, #000 10%, transparent 85%);
+  animation: grid-scroll 6s linear infinite;
+}
+@keyframes grid-scroll { to { background-position: 0 60px, 0 0; } }
+/* 掃描線 */
+:root[data-game="on"] body::after {
+  content: ""; position: fixed; inset: 0; z-index: 50; pointer-events: none;
+  background: repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 3px);
+}
+:root[data-game="on"] h1, :root[data-game="on"] h2, :root[data-game="on"] .brand {
+  font-family: ui-monospace, Menlo, monospace; letter-spacing: .06em; text-transform: uppercase;
+}
+:root[data-game="on"] h1 { color: #fff; text-shadow: 0 0 12px rgba(31, 182, 255, 0.7); }
+:root[data-game="on"] h2 { color: var(--accent); }
+:root[data-game="on"] .sidebar { background: rgba(5, 12, 28, 0.82); backdrop-filter: blur(10px); border-right-color: var(--border); }
+:root[data-game="on"] .brand { color: #fff; text-shadow: 0 0 10px var(--accent); }
+:root[data-game="on"] .nav a { border-left: 2px solid transparent; border-radius: 0 6px 6px 0; transition: all .15s; }
+:root[data-game="on"] .nav a.active { border-left-color: var(--accent); background: linear-gradient(90deg, rgba(31, 182, 255, 0.22), transparent); color: #fff; text-shadow: 0 0 8px var(--accent); }
+:root[data-game="on"] .card {
+  position: relative; backdrop-filter: blur(8px); box-shadow: var(--glow); border-radius: 4px;
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+}
+/* 數據方塊：滑鼠移上去會 3D 傾斜浮起 */
+:root[data-game="on"] .tiles { perspective: 900px; }
+:root[data-game="on"] .tile { transition: transform .25s, box-shadow .25s; transform-style: preserve-3d; }
+:root[data-game="on"] .tile:hover { transform: rotateX(8deg) rotateY(-6deg) translateZ(14px); box-shadow: 0 0 0 1px var(--accent), 0 0 28px rgba(31, 182, 255, 0.35); }
+:root[data-game="on"] .tile .label { font-family: ui-monospace, Menlo, monospace; text-transform: uppercase; letter-spacing: .04em; }
+:root[data-game="on"] .tile .value { font-family: ui-monospace, Menlo, monospace; color: #fff; text-shadow: 0 0 10px rgba(31, 182, 255, 0.55); }
+:root[data-game="on"] .tile .value.up { color: var(--up-text); text-shadow: 0 0 10px rgba(43, 255, 136, 0.55); }
+:root[data-game="on"] .tile .value.down { color: var(--down-text); text-shadow: 0 0 10px rgba(255, 61, 110, 0.55); }
+:root[data-game="on"] .btn { border-radius: 2px; background: rgba(31, 182, 255, 0.08); }
+:root[data-game="on"] .btn:hover { box-shadow: 0 0 12px rgba(31, 182, 255, 0.4); }
+:root[data-game="on"] .btn.primary { color: #021022; font-weight: 600; box-shadow: 0 0 14px rgba(31, 182, 255, 0.55); }
+:root[data-game="on"] .btn[aria-pressed="true"] { border-color: var(--accent); color: #fff; box-shadow: 0 0 10px rgba(31, 182, 255, 0.5); }
+:root[data-game="on"] input, :root[data-game="on"] select { background: rgba(4, 12, 28, 0.8); }
+:root[data-game="on"] select option { background: #0a1630; }
+:root[data-game="on"] tr:hover td { background: rgba(31, 182, 255, 0.06); }
+@media (prefers-reduced-motion: reduce) {
+  :root[data-game="on"] body::before { animation: none; }
+  :root[data-game="on"] .tile:hover { transform: none; }
+}
+
+.arena { position: relative; height: clamp(320px, 52vh, 560px); margin-bottom: 16px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden;
+  background: radial-gradient(ellipse at 50% 120%, rgba(31, 182, 255, 0.18), transparent 60%), #040916; box-shadow: var(--glow); }
+.arena-loading { display: grid; place-items: center; color: var(--text-3); font-family: ui-monospace, Menlo, monospace; }
+.arena-canvas { position: absolute; inset: 0; cursor: grab; touch-action: none; }
+.arena-canvas:active { cursor: grabbing; }
+.arena-hud { position: absolute; font: 12px ui-monospace, Menlo, monospace; color: var(--text-2); pointer-events: none; display: flex; gap: 10px; align-items: center; }
+.arena-hud.tl { top: 12px; left: 14px; }
+.arena-hud.br { bottom: 10px; right: 14px; color: var(--text-3); }
+.hud-tag { color: #021022; background: var(--accent); padding: 1px 8px; font-weight: 700; letter-spacing: .1em; }
+.arena-legend { position: absolute; bottom: 10px; left: 14px; display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--text-2); pointer-events: none; max-width: 60%; }
+.arena-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.arena-legend i { width: 10px; height: 10px; display: inline-block; box-shadow: 0 0 6px currentColor; }
+.arena-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-2); font: 14px ui-monospace, Menlo, monospace; pointer-events: none; letter-spacing: .05em; }
+.arena-tip { position: absolute; transform: translate(14px, -50%); pointer-events: none; z-index: 3; min-width: 200px; display: grid; gap: 2px;
+  padding: 10px 12px; font-size: 12px; background: rgba(4, 12, 28, 0.92); border: 1px solid var(--accent); box-shadow: 0 0 16px rgba(31, 182, 255, 0.4); color: var(--text); }
+@media (max-width: 760px) {
+  .arena-hud.br { display: none; }
+  .arena-legend { max-width: none; right: 14px; }
+}
