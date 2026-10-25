@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, qs, type Market, type Position, type Trade } from "../api/client";
 import { CandleChart, INTERVAL_SECONDS } from "../components/CandleChart";
 import { SymbolSelect, toTicker } from "../components/SymbolSelect";
@@ -33,13 +34,16 @@ function TradesTable({ trades }: { trades: Trade[] }) {
 
 export function ChartPage() {
   const positions = useQuery({ queryKey: ["positions", "open"], queryFn: () => api<Position[]>("/api/positions") });
-  const [symbol, setSymbol] = useState("BTCUSDT");
-  const [market, setMarket] = useState<Market>("futures");
+  // 從別頁點進來（例如總覽的持倉卡片）會帶 ?symbol=&market=，直接打開那個幣
+  const [params] = useSearchParams();
+  const linked = params.get("symbol");
+  const [symbol, setSymbol] = useState(() => (linked ? toTicker(linked) : "BTCUSDT"));
+  const [market, setMarket] = useState<Market>(() => (params.get("market") === "spot" ? "spot" : "futures"));
   const [interval, setInterval] = useState("15m");
   const [picked, setPicked] = useState<Trade[] | null>(null);
 
-  // 預設顯示第一個持倉
-  const [initialised, setInitialised] = useState(false);
+  // 沒有指定的話，預設顯示第一個持倉
+  const [initialised, setInitialised] = useState(!!linked);
   useEffect(() => {
     if (initialised || !positions.data) return;
     const p = positions.data[0];

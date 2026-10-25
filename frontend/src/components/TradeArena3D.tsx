@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import * as THREE from "three";
 import type { Position } from "../api/client";
 import { fmtPct, fmtPrice, fmtSigned } from "../format";
@@ -106,7 +107,8 @@ function StationCard({ item, width }: { item: ArenaPosition; width: number }) {
   const roe = margin > 0 ? pnl / margin : null;
   const cls = pnl > 0 ? "up" : pnl < 0 ? "down" : "";
   return (
-    <div className={`station-card ${cls}`} style={{ width }}>
+    <Link to={`/chart?symbol=${encodeURIComponent(p.symbol)}&market=${p.market}`} className={`station-card ${cls}`} style={{ width }}
+      title={`查看 ${p.symbol} 的 K 線與買賣點`}>
       <div className="sc-head">
         <b>{p.symbol}</b>
         <span className={`badge ${p.side}`}>{p.side === "long" ? "▲ 多" : "▼ 空"} {p.leverage}x</span>
@@ -117,7 +119,7 @@ function StationCard({ item, width }: { item: ArenaPosition; width: number }) {
         <span>{fmtSigned(pnl)} USDT</span>
         <span>{roe === null ? "" : `${roe > 0 ? "+" : ""}${fmtPct(roe)}`}</span>
       </div>
-    </div>
+    </Link>
   );
 }
 

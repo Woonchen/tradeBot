@@ -373,6 +373,8 @@ tr.detail-row > td { padding-top: 0; font-size: 12px; white-space: normal; }
 .station-anchor { position: absolute; transform: translate(-50%, calc(-100% - 16px)); z-index: 2; }
 .station-card { display: grid; gap: 2px; padding: 8px 10px; font-size: 12px; background: rgba(4, 12, 28, 0.9);
   border: 1px solid var(--border); border-top: 3px solid #5fd4ff; color: #e8f6ff; font-variant-numeric: tabular-nums; }
+.station-card { cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+.station-card:hover, .station-card:focus-visible { border-color: var(--accent); box-shadow: 0 0 14px rgba(31, 182, 255, 0.45); outline: none; }
 .station-card.up { border-top-color: #2bff88; }
 .station-card.down { border-top-color: #ff3d6e; }
 .sc-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
