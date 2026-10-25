@@ -667,7 +667,7 @@ export function Strategies() {
         ) : (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>名稱</th><th>策略</th><th>交易對</th><th>週期</th><th>狀態</th><th>目前判斷</th><th>最後判斷時間</th><th /></tr></thead>
+              <thead><tr><th>名稱</th><th>策略</th><th>交易對</th><th>週期</th><th>狀態</th><th>目前判斷</th><th>最後判斷</th><th /></tr></thead>
               <tbody>{configs.data!.map((c) => (
                 <tr key={c.id}>
                   <td>
@@ -683,7 +683,10 @@ export function Strategies() {
                     {c.last_error && <div className="error-text" title={c.last_error}>⚠ {c.last_error.slice(0, 40)}</div>}
                   </td>
                   <td>{c.last_target ? <span className={`badge ${c.last_target}`}>{TARGET_ZH[c.last_target]}</span> : <span className="muted">—</span>}</td>
-                  <td className="muted">{c.last_bar_time ? fmtTime(new Date(c.last_bar_time * 1000).toISOString()) : "—"}</td>
+                  {/* last_bar_time 是 K 棒的開盤時間；判斷發生在這根收盤之後，所以顯示收盤時間 */}
+                  <td className="muted" title={c.last_bar_time ? `依 ${fmtTime(new Date(c.last_bar_time * 1000).toISOString())} 開盤的 ${c.interval} K 棒，收盤後判斷` : undefined}>
+                    {c.last_bar_time ? `${fmtTime(new Date((c.last_bar_time + INTERVAL_SEC[c.interval]) * 1000).toISOString())} 收盤` : "—"}
+                  </td>
                   <td style={{ display: "flex", gap: 6 }}>
                     <button className="btn small" disabled={toggle.isPending} onClick={() => toggle.mutate(c)}>{c.enabled ? "停用" : "啟用"}</button>
                     <button className="btn small" onClick={() => setEditing({ id: c.id, name: c.name, strategy: c.strategy, symbol: c.symbol, market: c.market, interval: c.interval, params: c.params, enabled: c.enabled, enter_on_enable: c.enter_on_enable, mode: c.mode, ...pickOrder(c), ...pickPyramid(c) })}>編輯／回測</button>
