@@ -1,16 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { api, getToken, isLive, modeLabel, setToken, type BotSettings } from "./api/client";
 import { useLiveEvents } from "./api/useLiveEvents";
-import { Activity } from "./pages/Activity";
-import { ChartPage } from "./pages/ChartPage";
-import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
-import { PositionsPage } from "./pages/Positions";
-import { Settings } from "./pages/Settings";
-import { Strategies } from "./pages/Strategies";
-import { Wallet } from "./pages/Wallet";
+
+// 各頁按需載入：打開哪一頁才下載那一頁的程式（策略頁、K 線圖頁比較大）
+const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
+const ChartPage = lazy(() => import("./pages/ChartPage").then((m) => ({ default: m.ChartPage })));
+const Strategies = lazy(() => import("./pages/Strategies").then((m) => ({ default: m.Strategies })));
+const PositionsPage = lazy(() => import("./pages/Positions").then((m) => ({ default: m.PositionsPage })));
+const Wallet = lazy(() => import("./pages/Wallet").then((m) => ({ default: m.Wallet })));
+const Activity = lazy(() => import("./pages/Activity").then((m) => ({ default: m.Activity })));
+const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 
 const NAV = [
   ["/", "總覽"], ["/chart", "K 線圖"], ["/strategies", "策略"], ["/positions", "倉位"], ["/wallet", "錢包"],
@@ -41,6 +43,7 @@ function Shell() {
         </div>
       </aside>
       <main>
+        <Suspense fallback={<div className="empty">載入中…</div>}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/chart" element={<ChartPage />} />
@@ -51,6 +54,7 @@ function Shell() {
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
+        </Suspense>
       </main>
     </div>
   );
