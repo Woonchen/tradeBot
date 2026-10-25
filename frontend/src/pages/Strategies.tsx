@@ -47,6 +47,18 @@ const pyramidBody = (c: Pyramid) => (c.pyramid_atr === null ? {} : pickPyramid(c
 const pyramidText = (c: Pyramid) =>
   c.pyramid_atr === null ? "" : `；每漲 ${c.pyramid_atr} 個 ATR 加碼 ${c.pyramid_frac} 份，最多 ${c.pyramid_max} 次`;
 
+/** 列表用的一行摘要：實際會用的下單設定（策略沒填的用設定頁的值，整組都照設定頁時註明） */
+function orderSummary(c: StrategyConfig, bot: BotSettings | undefined): string {
+  if (!bot) return "";
+  const mode = c.size_mode ?? bot.size_mode, value = c.size_value ?? bot.size_value;
+  const lev = c.leverage ?? bot.leverage, sl = c.stop_loss_pct ?? bot.stop_loss_pct, tp = c.take_profit_pct ?? bot.take_profit_pct;
+  const size = mode === "fixed" ? `每筆 ${fmtNum(value, 0)} USDT` : `${mode === "equity" ? "總權益" : "可用資金"} ${fmtNum(value, 0)}%`;
+  const parts = [`${size}${c.market === "futures" ? ` × ${lev} 倍` : ""}`, sl ? `停損 ${fmtNum(sl, 0)}%` : "不設停損"];
+  if (tp) parts.push(`停利 ${fmtNum(tp, 0)}%`);
+  if (c.pyramid_atr !== null) parts.push(`加碼 ${c.pyramid_atr} ATR × ${c.pyramid_frac} 份 × ${c.pyramid_max} 次`);
+  return (hasOrder(c) ? "" : "照設定頁：") + parts.join("｜");
+}
+
 type Draft = OrderRules & Pyramid & {
   id?: number; name: string; strategy: string; symbol: string; market: Market; interval: string;
   params: Record<string, any>; enabled: boolean; enter_on_enable: boolean; mode: "live" | "shadow";
@@ -631,6 +643,7 @@ export function Strategies() {
   const catalog = useQuery({ queryKey: ["strategies", "catalog"], queryFn: () => api<StrategyInfo[]>("/api/strategies/catalog") });
   const configs = useQuery({ queryKey: ["strategies", "configs"], queryFn: () => api<StrategyConfig[]>("/api/strategies"), refetchInterval: 30_000 });
   const [editing, setEditing] = useState<Draft | null>(null);
+  const bot = useQuery({ queryKey: ["bot"], queryFn: () => api<BotSettings>("/api/bot") });
 
   const toggle = useMutation({
     mutationFn: (c: StrategyConfig) => api(`/api/strategies/${c.id}`, {
@@ -672,8 +685,7 @@ export function Strategies() {
                 <tr key={c.id}>
                   <td>
                     {c.name}{c.mode === "shadow" && <span className="badge" style={{ marginLeft: 6 }}>影子</span>}
-                    {hasOrder(c) && <span className="badge" style={{ marginLeft: 6 }} title="這個策略有自己的下單金額／槓桿／停損停利">自訂下單</span>}
-                    {c.pyramid_atr !== null && <span className="badge" style={{ marginLeft: 6 }} title={pyramidText(c).slice(1)}>加碼</span>}
+                    <div className="muted" style={{ fontSize: 12 }}>{orderSummary(c, bot.data)}</div>
                   </td>
                   <td className="muted">{labelOf(c.strategy)}</td>
                   <td>{c.symbol} <span className="muted">{c.market === "futures" ? "合約" : "現貨"}</span></td>
