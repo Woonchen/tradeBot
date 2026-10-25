@@ -115,7 +115,9 @@ function IdleCard({ item, width }: { item: Extract<ArenaItem, { kind: "idle" }>;
         <span className="badge">待機</span>
       </div>
       <div className="sc-wait">等待進場訊號</div>
-      <div className="sc-row"><span className="muted">策略</span><span className="sc-name">{first.name}{first.shadow ? "（影子）" : ""}</span></div>
+      <div className="sc-row"><span className="muted">策略</span>
+        <span className="sc-name" title={item.strategies.map((x) => x.name).join("\n")}>{first.name}{first.shadow ? "（影子）" : ""}</span>
+      </div>
       <div className="sc-row"><span className="muted">週期</span><span>{first.interval}{rest.length > 0 && ` · 另 ${rest.length} 個策略`}</span></div>
     </Link>
   );

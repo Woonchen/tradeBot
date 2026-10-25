@@ -382,7 +382,14 @@ tr.detail-row > td { padding-top: 0; font-size: 12px; white-space: normal; }
 .sc-src { font-size: 11px; color: var(--text-3); }
 .station-card.idle { border-top-color: #3d5a7a; border-style: dashed; border-top-style: solid; color: var(--text-2); }
 .sc-wait { font: 600 14px/1.9 ui-monospace, Menlo, monospace; color: var(--text-3); }
-.sc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; text-align: right; }
+/* 卡片寬度固定：每一列都不能比卡片寬（grid 子元素預設會被內容撐開），長字串截斷 */
+.station-card { grid-template-columns: minmax(0, 1fr); }
+.station-card > * { min-width: 0; }
+.sc-row > :first-child { flex-shrink: 0; white-space: nowrap; }
+.sc-row > :last-child { min-width: 0; text-align: right; }
+.sc-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sc-head .badge { flex-shrink: 0; }
+.sc-name { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
 .arena-empty a { pointer-events: auto; }
 .sc-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
 .sc-head b { font-family: ui-monospace, Menlo, monospace; }
