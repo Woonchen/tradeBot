@@ -3,7 +3,9 @@
 import asyncio
 import logging
 
-from sqlalchemy import select
+from datetime import timedelta
+
+from sqlalchemy import delete, select
 
 from ..engine.executor import Executor
 from ..engine.ledger import LedgerState, apply_fill
@@ -12,6 +14,9 @@ from ..models import BalanceSnapshot, EquitySnapshot, Order, Position, Trade, ut
 from ..services.market_stream import MarketHub
 
 log = logging.getLogger(__name__)
+
+KEEP_FULL_DAYS = 7  # 最近幾天的餘額快照全部保留（每分鐘一筆）；更早的每小時只留一筆
+PRUNE_EVERY = 6 * 3600
 
 MARKET_ZH = {"spot": "現貨", "futures": "合約"}
 
@@ -171,8 +176,33 @@ class SyncWorkers:
                 if res.status != "open":  # 只在訂單結束時記錄一次，避免部分成交重複入帳
                     await self.ex.record_fill(s, adapter, o, res)
 
+    async def prune_snapshots(self) -> int:
+        """舊的餘額快照每小時只留一筆（該小時最早的那次快照，資產明細跟權益一起留），回傳刪了幾筆。
+
+        權益曲線、總覽的最大回撤只需要大概的形狀；最近 KEEP_FULL_DAYS 天保留完整的每分鐘資料。
+        """
+        cutoff = utcnow() - timedelta(days=KEEP_FULL_DAYS)
+        removed = 0
+        async with self.sf() as s:
+            for model in (EquitySnapshot, BalanceSnapshot):
+                rows = (await s.execute(select(model.id, model.ts).where(model.ts < cutoff))).all()
+                first: dict = {}  # 每個小時最早的快照時間
+                for _, ts in rows:
+                    hour = ts.replace(minute=0, second=0, microsecond=0)
+                    if hour not in first or ts < first[hour]:
+                        first[hour] = ts
+                drop = [i for i, ts in rows if ts != first[ts.replace(minute=0, second=0, microsecond=0)]]
+                for k in range(0, len(drop), 1000):
+                    await s.execute(delete(model).where(model.id.in_(drop[k:k + 1000])))
+                removed += len(drop)
+            await s.commit()
+        if removed:
+            log.info("pruned %d old balance/equity snapshots", removed)
+        return removed
+
     def start(self, cfg) -> list[asyncio.Task]:
         return [
+            asyncio.create_task(every(PRUNE_EVERY, self.prune_snapshots, "prune")),
             asyncio.create_task(every(cfg.balance_sync_seconds, self.snapshot_balances, "balance")),
             asyncio.create_task(every(cfg.position_sync_seconds, self.sync_positions, "position")),
             asyncio.create_task(every(cfg.order_sync_seconds, self.sync_orders, "order")),
