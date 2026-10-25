@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import * as THREE from "three";
-import type { Position } from "../api/client";
+import type { Market, Position } from "../api/client";
 import { fmtPct, fmtPrice, fmtSigned } from "../format";
 
-/** 場景裡每個工作站對應的持倉（已用即時價格算好損益） */
-export interface ArenaPosition { key: string; position: Position; mark: number | null; pnl: number }
+/** 工作站：有持倉（已用即時價格算好損益），或是啟用中的策略在等進場（待機） */
+export type ArenaItem =
+  | { kind: "position"; key: string; position: Position; mark: number | null; pnl: number }
+  | { kind: "idle"; key: string; symbol: string; market: Market; strategies: { name: string; interval: string; shadow: boolean }[] };
 
 /**
  * 「生產線」監控畫面：每個持倉是輸送帶上的一個工作站，即時報價像貨物一樣送進工作站。
@@ -15,6 +17,7 @@ export interface ArenaPosition { key: string; position: Position; mark: number |
 const UP = new THREE.Color("#2bff88");
 const DOWN = new THREE.Color("#ff3d6e");
 const FLAT = new THREE.Color("#5fd4ff");
+const IDLE = new THREE.Color("#3d5a7a");
 const SPACING = 6; // 工作站間距（世界座標）
 const PITCH = THREE.MathUtils.degToRad(32); // 鏡頭俯角
 const FOV = 18; // 視角窄一點，透視變形小，左右兩端的工作站不會歪太多
@@ -24,7 +27,9 @@ const MIN_COL_PX = 210;
 const STATION_TOP = 1.9;
 
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-const statusColor = (pnl: number) => (pnl > 0 ? UP : pnl < 0 ? DOWN : FLAT);
+const statusColor = (item: ArenaItem) =>
+  item.kind === "idle" ? IDLE : item.pnl > 0 ? UP : item.pnl < 0 ? DOWN : FLAT;
+const chartLink = (symbol: string, market: Market) => `/chart?symbol=${encodeURIComponent(symbol)}&market=${market}`;
 
 interface Station { group: THREE.Group; light: THREE.MeshStandardMaterial; panel: THREE.MeshStandardMaterial; edges: THREE.LineBasicMaterial; x: number; z: number; colW: number }
 interface Packet { mesh: THREE.Mesh; from: number; to: number; t: number }
@@ -101,13 +106,29 @@ function Flash({ value, children }: { value: number | null; children: ReactNode 
   return <span className={dir ? `flash-${dir}` : undefined}>{children}</span>;
 }
 
-function StationCard({ item, width }: { item: ArenaPosition; width: number }) {
+function IdleCard({ item, width }: { item: Extract<ArenaItem, { kind: "idle" }>; width: number }) {
+  const [first, ...rest] = item.strategies;
+  return (
+    <Link to={chartLink(item.symbol, item.market)} className="station-card idle" style={{ width }} title={`查看 ${item.symbol} 的 K 線`}>
+      <div className="sc-head">
+        <b>{item.symbol}</b>
+        <span className="badge">待機</span>
+      </div>
+      <div className="sc-wait">等待進場訊號</div>
+      <div className="sc-row"><span className="muted">策略</span><span className="sc-name">{first.name}{first.shadow ? "（影子）" : ""}</span></div>
+      <div className="sc-row"><span className="muted">週期</span><span>{first.interval}{rest.length > 0 && ` · 另 ${rest.length} 個策略`}</span></div>
+    </Link>
+  );
+}
+
+function StationCard({ item, width }: { item: ArenaItem; width: number }) {
+  if (item.kind === "idle") return <IdleCard item={item} width={width} />;
   const { position: p, mark, pnl } = item;
   const margin = (p.qty * p.entry_price) / Math.max(1, p.leverage);
   const roe = margin > 0 ? pnl / margin : null;
   const cls = pnl > 0 ? "up" : pnl < 0 ? "down" : "";
   return (
-    <Link to={`/chart?symbol=${encodeURIComponent(p.symbol)}&market=${p.market}`} className={`station-card ${cls}`} style={{ width }}
+    <Link to={chartLink(p.symbol, p.market)} className={`station-card ${cls}`} style={{ width }}
       title={`查看 ${p.symbol} 的 K 線與買賣點`}>
       <div className="sc-head">
         <b>{p.symbol}</b>
@@ -123,7 +144,7 @@ function StationCard({ item, width }: { item: ArenaPosition; width: number }) {
   );
 }
 
-export function TradeArena3D({ positions }: { positions: ArenaPosition[] }) {
+export function TradeArena3D({ items: positions }: { items: ArenaItem[] }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const ctx = useRef<{
     renderer: THREE.WebGLRenderer;
@@ -140,9 +161,12 @@ export function TradeArena3D({ positions }: { positions: ArenaPosition[] }) {
   const lastMark = useRef<Record<string, number | null>>({});
 
   const n = positions.length;
-  const cols = Math.max(1, Math.min(6, Math.floor(width / MIN_COL_PX), Math.max(1, n)));
+  const held = positions.filter((i) => i.kind === "position").length;
+  // 一排最多放幾站看寬度；鏡頭遠近也只看寬度，站少的時候不會被放大，而是置中排列
+  const capacity = Math.max(1, Math.min(6, Math.floor(width / MIN_COL_PX)));
+  const cols = Math.min(capacity, Math.max(1, n));
   const rows = Math.max(1, Math.ceil(n / cols));
-  const colPx = width / cols;
+  const colPx = width / capacity;
   const height = rows * ROW_PX;
   const keys = positions.map((i) => i.key).join("|");
 
@@ -219,7 +243,7 @@ export function TradeArena3D({ positions }: { positions: ArenaPosition[] }) {
     const cam = c.camera;
     cam.aspect = width / height;
     // 固定鏡頭：距離算到剛好看得到整排工作站
-    const dist = (cols * SPACING) / (2 * Math.tan(THREE.MathUtils.degToRad(FOV / 2)) * cam.aspect);
+    const dist = (capacity * SPACING) / (2 * Math.tan(THREE.MathUtils.degToRad(FOV / 2)) * cam.aspect);
     cam.position.set(0, 0.9 + Math.sin(PITCH) * dist, Math.cos(PITCH) * dist);
     cam.lookAt(0, 0.9, 0);
     cam.updateProjectionMatrix();
@@ -271,7 +295,8 @@ export function TradeArena3D({ positions }: { positions: ArenaPosition[] }) {
     positions.forEach((item, i) => {
       const r = Math.floor(i / cols);
       const z = rowZ[r];
-      const x = rowScale[r].toWorld(colPx * ((i % cols) + 0.5));
+      const inRow = Math.min(cols, n - r * cols); // 最後一排可能不滿，一樣置中
+      const x = rowScale[r].toWorld(width / 2 + ((i % cols) - (inRow - 1) / 2) * colPx);
       const st = buildStation(x, z, rowScale[r].colW);
       c.line.add(st.group);
       c.stations.set(item.key, st);
@@ -279,7 +304,7 @@ export function TradeArena3D({ positions }: { positions: ArenaPosition[] }) {
     });
     setAnchors(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keys, width, cols, rows, height]);
+  }, [keys, width, capacity, cols, rows, height]);
 
   // 損益變號 → 換燈號顏色；報價變動 → 送一個貨物進工作站
   useEffect(() => {
@@ -289,9 +314,10 @@ export function TradeArena3D({ positions }: { positions: ArenaPosition[] }) {
     positions.forEach((item) => {
       const st = c.stations.get(item.key);
       if (!st) return;
-      const color = statusColor(item.pnl);
+      const color = statusColor(item);
       [st.light, st.panel].forEach((m) => { m.color.copy(color); m.emissive.copy(color); });
       st.edges.color.copy(color).lerp(new THREE.Color("#ffffff"), 0.2);
+      if (item.kind === "idle") return; // 待機的沒有即時報價
       const prev = lastMark.current[item.key];
       lastMark.current[item.key] = item.mark;
       if (still || prev === undefined || prev === null || item.mark === null || item.mark === prev || c.packets.length > 60) return;
@@ -313,11 +339,11 @@ export function TradeArena3D({ positions }: { positions: ArenaPosition[] }) {
     <div className="arena">
       <div className="arena-hud tl">
         <span className="hud-tag">PRODUCTION LINE</span>
-        <span>{n} 個持倉 · 即時報價</span>
+        <span>{held} 個持倉 · {n - held} 個待機</span>
       </div>
       <div className="arena-stage" style={{ height }}>
         <div className="arena-canvas" ref={hostRef} role="img"
-          aria-label={`持倉生產線：${n} 個工作站，燈號綠色代表獲利、紅色代表虧損`} />
+          aria-label={`持倉生產線：${held} 個持倉、${n - held} 個待機的工作站，燈號綠色代表獲利、紅色代表虧損、灰色代表待機`} />
         {positions.map((item) => {
           const a = anchors[item.key];
           return a ? (
@@ -327,12 +353,17 @@ export function TradeArena3D({ positions }: { positions: ArenaPosition[] }) {
           ) : null;
         })}
         {failed && <div className="arena-empty">這個瀏覽器不支援 WebGL，無法顯示 3D 場景</div>}
-        {!failed && n === 0 && <div className="arena-empty">生產線待機中 · 目前沒有持倉</div>}
+        {!failed && n === 0 && (
+          <div className="arena-empty">
+            <span>生產線停機中 · 沒有持倉，也沒有啟用中的策略 <Link to="/strategies">前往策略 →</Link></span>
+          </div>
+        )}
       </div>
       <div className="arena-legend">
         <span><i style={{ background: "#2bff88" }} />獲利</span>
         <span><i style={{ background: "#ff3d6e" }} />虧損</span>
-        <span>輸送帶上的方塊 = 每一筆報價跳動（綠漲紅跌）</span>
+        <span><i style={{ background: "#3d5a7a" }} />待機（策略等待進場）</span>
+        <span>輸送帶上的方塊 = 每一筆報價跳動（綠漲紅跌） · 點卡片看 K 線</span>
       </div>
     </div>
   );

@@ -377,6 +377,11 @@ tr.detail-row > td { padding-top: 0; font-size: 12px; white-space: normal; }
 .station-card:hover, .station-card:focus-visible { border-color: var(--accent); box-shadow: 0 0 14px rgba(31, 182, 255, 0.45); outline: none; }
 .station-card.up { border-top-color: #2bff88; }
 .station-card.down { border-top-color: #ff3d6e; }
+.station-card { min-height: 104px; }
+.station-card.idle { border-top-color: #3d5a7a; border-style: dashed; border-top-style: solid; color: var(--text-2); }
+.sc-wait { font: 600 14px/1.9 ui-monospace, Menlo, monospace; color: var(--text-3); }
+.sc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; text-align: right; }
+.arena-empty a { pointer-events: auto; }
 .sc-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
 .sc-head b { font-family: ui-monospace, Menlo, monospace; }
 .sc-price { font: 700 20px/1.3 ui-monospace, Menlo, monospace; }

@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { api, type ActivityLog, type EquityPoint, type Position, type Summary } from "../api/client";
+import { api, type ActivityLog, type EquityPoint, type Position, type StrategyConfig, type Summary } from "../api/client";
 import { useLivePrices } from "../api/liveSocket";
 import { ActivityTimeline } from "../components/ActivityTimeline";
 import { EquityChart } from "../components/EquityChart";
 import { SentimentCard } from "../components/SentimentCard";
+import { toTicker } from "../components/SymbolSelect";
+import type { ArenaItem } from "../components/TradeArena3D";
 import { StrategyStatus } from "../components/StrategyStatus";
 import { useGameMode } from "../gameMode";
 import { fmtNum, fmtPct, fmtSigned, livePnl, pnlClass } from "../format";
@@ -32,13 +34,26 @@ export function Dashboard() {
   const positions = useQuery({ queryKey: ["positions", "open"], queryFn: () => api<Position[]>("/api/positions") });
   const prices = useLivePrices();
   const game = useGameMode();
-  const arena = useMemo(
-    () => (positions.data ?? []).map((p) => {
+  const strategies = useQuery({
+    queryKey: ["strategies", "configs"], queryFn: () => api<StrategyConfig[]>("/api/strategies"), enabled: game,
+  });
+  const arena = useMemo(() => {
+    const held: ArenaItem[] = (positions.data ?? []).map((p) => {
       const key = `${p.market}:${p.symbol}`;
-      return { key: `${key}:${p.id}`, position: p, ...livePnl(p, prices[key]) };
-    }),
-    [positions.data, prices],
-  );
+      return { kind: "position", key: `${key}:${p.id}`, position: p, ...livePnl(p, prices[key]) };
+    });
+    // 啟用中的策略、但那個幣目前沒有持倉 → 待機的工作站（同一個幣多個策略合併成一站）
+    const busy = new Set((positions.data ?? []).map((p) => `${p.market}:${toTicker(p.symbol)}`));
+    const idle = new Map<string, Extract<ArenaItem, { kind: "idle" }>>();
+    for (const c of strategies.data ?? []) {
+      const key = `${c.market}:${toTicker(c.symbol)}`;
+      if (!c.enabled || busy.has(key)) continue;
+      const entry = idle.get(key) ?? { kind: "idle", key: `idle:${key}`, symbol: toTicker(c.symbol), market: c.market, strategies: [] };
+      entry.strategies.push({ name: c.name, interval: c.interval, shadow: c.mode === "shadow" });
+      idle.set(key, entry);
+    }
+    return [...held, ...idle.values()];
+  }, [positions.data, prices, strategies.data]);
   const unrealized = positions.data
     ? positions.data.reduce((sum, p) => sum + livePnl(p, prices[`${p.market}:${p.symbol}`]).pnl, 0)
     : summary.data?.unrealized;
@@ -53,7 +68,7 @@ export function Dashboard() {
       </div>
       {game && (
         <Suspense fallback={<div className="arena arena-loading">載入 3D 場景中…</div>}>
-          <TradeArena3D positions={arena} />
+          <TradeArena3D items={arena} />
         </Suspense>
       )}
       <div className="tiles">
