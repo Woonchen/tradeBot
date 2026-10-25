@@ -1,53 +1,53 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { EquityPoint, Position } from "../api/client";
-import { fmtNum, fmtPrice, fmtSigned } from "../format";
+import type { Position } from "../api/client";
+import { fmtPct, fmtPrice, fmtSigned } from "../format";
 
-/** 場景裡每座塔對應的持倉（已用即時價格算好損益） */
+/** 場景裡每個工作站對應的持倉（已用即時價格算好損益） */
 export interface ArenaPosition { key: string; position: Position; mark: number | null; pnl: number }
 
-interface Props {
-  positions: ArenaPosition[];
-  equity: EquityPoint[];
-  /** 今日權益變化：決定中央能量核心的顏色 */
-  todayChange: number | null | undefined;
-}
+/**
+ * 「生產線」監控畫面：每個持倉是輸送帶上的一個工作站，即時報價像貨物一樣送進工作站。
+ * 鏡頭固定不動，所有數字都放在畫面上方固定位置的 2D 卡片，3D 只表現狀態（燈號顏色、報價流動）。
+ */
 
 const UP = new THREE.Color("#2bff88");
 const DOWN = new THREE.Color("#ff3d6e");
 const FLAT = new THREE.Color("#5fd4ff");
-const SPACING = 3.2;
-const MAX_HEIGHT = 7;
+const SPACING = 6; // 工作站間距（世界座標）
+const PITCH = THREE.MathUtils.degToRad(32); // 鏡頭俯角
+const FOV = 18; // 視角窄一點，透視變形小，左右兩端的工作站不會歪太多
+const ROW_PX = 250; // 每條生產線佔的高度（px）
+const CARD_PX = 118; // 卡片高度：第一排工作站上方要留這麼多空間
+const MIN_COL_PX = 210;
+const STATION_TOP = 1.9;
 
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const statusColor = (pnl: number) => (pnl > 0 ? UP : pnl < 0 ? DOWN : FLAT);
 
-/** 塔頂的文字看板（canvas 畫字當貼圖） */
-function makeLabel(title: string, value: string, color: THREE.Color) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 512;
-  canvas.height = 192;
-  const ctx = canvas.getContext("2d")!;
-  const hex = `#${color.getHexString()}`;
-  ctx.fillStyle = "rgba(4, 10, 24, 0.78)";
-  ctx.strokeStyle = hex;
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.roundRect(6, 6, 500, 180, 18);
-  ctx.fill();
-  ctx.stroke();
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#e8f6ff";
-  ctx.font = "600 52px ui-monospace, Menlo, monospace";
-  ctx.fillText(title, 256, 78);
-  ctx.fillStyle = hex;
-  ctx.font = "700 60px ui-monospace, Menlo, monospace";
-  ctx.fillText(value, 256, 152);
-  const tex = new THREE.CanvasTexture(canvas);
+interface Station { group: THREE.Group; light: THREE.MeshStandardMaterial; panel: THREE.MeshStandardMaterial; edges: THREE.LineBasicMaterial; x: number; z: number; colW: number }
+interface Packet { mesh: THREE.Mesh; from: number; to: number; t: number }
+
+/** 輸送帶表面的斜紋貼圖（捲動 offset 就是帶子在動） */
+function beltTexture() {
+  const c = document.createElement("canvas");
+  c.width = 128;
+  c.height = 32;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "#0b1a30";
+  ctx.fillRect(0, 0, 128, 32);
+  ctx.strokeStyle = "#1c4a78";
+  ctx.lineWidth = 6;
+  for (let x = -32; x < 160; x += 32) {
+    ctx.beginPath();
+    ctx.moveTo(x, 32);
+    ctx.lineTo(x + 16, 0);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
   tex.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  sprite.scale.set(3.2, 1.2, 1);
-  return sprite;
+  return tex;
 }
 
 function disposeTree(obj: THREE.Object3D) {
@@ -55,127 +55,96 @@ function disposeTree(obj: THREE.Object3D) {
     const m = o as THREE.Mesh;
     m.geometry?.dispose();
     const mats = Array.isArray(m.material) ? m.material : m.material ? [m.material] : [];
-    mats.forEach((mat) => {
-      (mat as THREE.SpriteMaterial).map?.dispose();
-      mat.dispose();
-    });
+    mats.forEach((mat) => mat.dispose());
   });
 }
 
-/** 依持倉建塔：高度 = 損益佔最大損益的比例，底面積 = 名目價值，綠漲紅跌 */
-function buildTowers(items: ArenaPosition[]) {
+function buildStation(x: number, z: number, colW: number): Station {
   const group = new THREE.Group();
-  const maxPnl = Math.max(1e-9, ...items.map((i) => Math.abs(i.pnl)));
-  const maxNotional = Math.max(1e-9, ...items.map((i) => Math.abs(i.position.qty * i.position.entry_price)));
-  const cols = Math.ceil(Math.sqrt(items.length));
-  items.forEach((item, idx) => {
-    const { position: p, pnl } = item;
-    const color = pnl > 0 ? UP : pnl < 0 ? DOWN : FLAT;
-    const height = 0.6 + (Math.abs(pnl) / maxPnl) * (MAX_HEIGHT - 0.6);
-    const width = 0.7 + Math.sqrt(Math.abs(p.qty * p.entry_price) / maxNotional) * 1.1;
-    const row = Math.floor(idx / cols);
-    const col = idx % cols;
-    const x = (col - (cols - 1) / 2) * SPACING;
-    const z = (row - (Math.ceil(items.length / cols) - 1) / 2) * SPACING;
-
-    const tower = new THREE.Group();
-    tower.position.set(x, 0, z);
-    tower.userData = { key: item.key, height, baseY: 0 };
-
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(width, height, width),
-      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.35, metalness: 0.4, roughness: 0.25, transparent: true, opacity: 0.82 }),
-    );
-    body.position.y = height / 2;
-    body.userData.key = item.key;
-    tower.add(body);
-
-    const edges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(body.geometry),
-      new THREE.LineBasicMaterial({ color: color.clone().lerp(new THREE.Color("#ffffff"), 0.4) }),
-    );
-    edges.position.copy(body.position);
-    tower.add(edges);
-
-    // 地面光環：多單實心環、空單虛線感的雙環，不只靠顏色區分方向
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(width * 0.8, width * 0.95, 48),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
-    );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.02;
-    tower.add(ring);
-    if (p.side === "short") {
-      const ring2 = new THREE.Mesh(
-        new THREE.RingGeometry(width * 1.05, width * 1.12, 48),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, side: THREE.DoubleSide }),
-      );
-      ring2.rotation.x = -Math.PI / 2;
-      ring2.position.y = 0.02;
-      tower.add(ring2);
-    }
-
-    const label = makeLabel(`${p.symbol} ${p.side === "long" ? "▲多" : "▼空"}`, fmtSigned(pnl), color);
-    label.position.y = height + 1;
-    label.userData.float = true;
-    tower.add(label);
-
-    group.add(tower);
-  });
-  return group;
+  group.position.set(x, 0, z);
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(1.8, 1.4, 1.6),
+    new THREE.MeshStandardMaterial({ color: "#16263f", metalness: 0.6, roughness: 0.45 }),
+  );
+  body.position.y = 0.9;
+  group.add(body);
+  const edges = new THREE.LineBasicMaterial({ color: FLAT });
+  const edgeLines = new THREE.LineSegments(new THREE.EdgesGeometry(body.geometry), edges);
+  edgeLines.position.copy(body.position);
+  group.add(edgeLines);
+  // 正面的狀態燈條
+  const panel = new THREE.MeshStandardMaterial({ color: FLAT, emissive: FLAT, emissiveIntensity: 1 });
+  const strip = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.16, 0.05), panel);
+  strip.position.set(0, 1.1, 0.82);
+  group.add(strip);
+  // 頂部信號燈
+  const light = new THREE.MeshStandardMaterial({ color: FLAT, emissive: FLAT, emissiveIntensity: 1.4 });
+  const beacon = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.3, 24), light);
+  beacon.position.y = 1.75;
+  group.add(beacon);
+  return { group, light, panel, edges, x, z, colW };
 }
 
-/** 近 7 天權益曲線：場景後方一條發光的 3D 光帶 */
-function buildEquityRibbon(points: EquityPoint[], span: number) {
-  const group = new THREE.Group();
-  const vals = points.map((p) => p.total_usdt).filter((v) => Number.isFinite(v));
-  if (vals.length < 2) return group;
-  const min = Math.min(...vals);
-  const max = Math.max(...vals);
-  const range = max - min || 1;
-  const width = Math.max(14, span + 8);
-  const step = Math.max(1, Math.floor(vals.length / 160));
-  const pts: THREE.Vector3[] = [];
-  for (let i = 0; i < vals.length; i += step) {
-    const t = i / (vals.length - 1);
-    pts.push(new THREE.Vector3(-width / 2 + t * width, 1.5 + ((vals[i] - min) / range) * 5, -span / 2 - 6));
-  }
-  const curve = new THREE.CatmullRomCurve3(pts);
-  const rising = vals[vals.length - 1] >= vals[0];
-  const color = rising ? UP : DOWN;
-  group.add(new THREE.Mesh(
-    new THREE.TubeGeometry(curve, Math.min(400, pts.length * 3), 0.09, 8, false),
-    new THREE.MeshBasicMaterial({ color }),
-  ));
-  // 光帶下方的半透明「牆」，讓曲線有體積感
-  const wallPos: number[] = [];
-  const samples = curve.getPoints(200);
-  samples.forEach((v, i) => {
-    if (i === 0) return;
-    const a = samples[i - 1];
-    wallPos.push(a.x, 0, a.z, v.x, 0, v.z, v.x, v.y, v.z, a.x, 0, a.z, v.x, v.y, v.z, a.x, a.y, a.z);
-  });
-  const wallGeo = new THREE.BufferGeometry();
-  wallGeo.setAttribute("position", new THREE.Float32BufferAttribute(wallPos, 3));
-  group.add(new THREE.Mesh(wallGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.08, side: THREE.DoubleSide, depthWrite: false })));
-  return group;
+/** 卡片上的數字：值變動時短暫閃綠／閃紅（位置不動），跟一般看盤軟體一樣 */
+function Flash({ value, children }: { value: number | null; children: ReactNode }) {
+  const prev = useRef(value);
+  const [dir, setDir] = useState<"" | "up" | "down">("");
+  useEffect(() => {
+    const old = prev.current;
+    prev.current = value;
+    if (old === null || value === null || value === old) return;
+    setDir(value > old ? "up" : "down");
+    const t = setTimeout(() => setDir(""), 700);
+    return () => clearTimeout(t);
+  }, [value]);
+  return <span className={dir ? `flash-${dir}` : undefined}>{children}</span>;
 }
 
-export function TradeArena3D({ positions, equity, todayChange }: Props) {
+function StationCard({ item, width }: { item: ArenaPosition; width: number }) {
+  const { position: p, mark, pnl } = item;
+  const margin = (p.qty * p.entry_price) / Math.max(1, p.leverage);
+  const roe = margin > 0 ? pnl / margin : null;
+  const cls = pnl > 0 ? "up" : pnl < 0 ? "down" : "";
+  return (
+    <div className={`station-card ${cls}`} style={{ width }}>
+      <div className="sc-head">
+        <b>{p.symbol}</b>
+        <span className={`badge ${p.side}`}>{p.side === "long" ? "▲ 多" : "▼ 空"} {p.leverage}x</span>
+      </div>
+      <div className="sc-price"><Flash value={mark}>{fmtPrice(mark)}</Flash></div>
+      <div className="sc-row"><span className="muted">進場</span><span>{fmtPrice(p.entry_price)}</span></div>
+      <div className={`sc-row sc-pnl ${cls}`}>
+        <span>{fmtSigned(pnl)} USDT</span>
+        <span>{roe === null ? "" : `${roe > 0 ? "+" : ""}${fmtPct(roe)}`}</span>
+      </div>
+    </div>
+  );
+}
+
+export function TradeArena3D({ positions }: { positions: ArenaPosition[] }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const sceneRef = useRef<{
+  const ctx = useRef<{
+    renderer: THREE.WebGLRenderer;
     scene: THREE.Scene;
-    towers: THREE.Group;
-    ribbon: THREE.Group;
-    core: THREE.Mesh;
-    pickables: THREE.Object3D[];
+    camera: THREE.PerspectiveCamera;
+    line: THREE.Group;
+    belt: THREE.CanvasTexture;
+    stations: Map<string, Station>;
+    packets: Packet[];
   } | null>(null);
-  const [hover, setHover] = useState<{ key: string; x: number; y: number } | null>(null);
+  const [width, setWidth] = useState(0);
+  const [anchors, setAnchors] = useState<Record<string, { x: number; y: number }>>({});
   const [failed, setFailed] = useState(false);
-  const itemsRef = useRef(positions);
-  itemsRef.current = positions;
+  const lastMark = useRef<Record<string, number | null>>({});
 
-  // 建立 renderer / 相機 / 燈光，只做一次
+  const n = positions.length;
+  const cols = Math.max(1, Math.min(6, Math.floor(width / MIN_COL_PX), Math.max(1, n)));
+  const rows = Math.max(1, Math.ceil(n / cols));
+  const colPx = width / cols;
+  const height = rows * ROW_PX;
+  const keys = positions.map((i) => i.key).join("|");
+
+  // renderer / 燈光 / 地板只建一次
   useEffect(() => {
     const host = hostRef.current!;
     let renderer: THREE.WebGLRenderer;
@@ -186,121 +155,45 @@ export function TradeArena3D({ positions, equity, todayChange }: Props) {
       return;
     }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
     host.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2("#050a18", 0.028);
-    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 200);
-    camera.position.set(11, 9, 13);
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.maxPolarAngle = Math.PI * 0.47;
-    controls.minDistance = 6;
-    controls.maxDistance = 40;
-    controls.target.set(0, 2, 0);
-    controls.autoRotate = !reducedMotion();
-    controls.autoRotateSpeed = 0.6;
-    // 使用者拖曳過就停止自動旋轉，雙擊恢復
-    controls.addEventListener("start", () => { controls.autoRotate = false; });
-    const onDbl = () => { controls.autoRotate = !reducedMotion(); };
-    renderer.domElement.addEventListener("dblclick", onDbl);
-
-    scene.add(new THREE.AmbientLight("#6fa8ff", 0.5));
-    const key = new THREE.DirectionalLight("#ffffff", 1.4);
-    key.position.set(8, 14, 6);
+    const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 500);
+    scene.add(new THREE.AmbientLight("#7fb0ff", 0.7));
+    const key = new THREE.DirectionalLight("#ffffff", 1.6);
+    key.position.set(6, 12, 10);
     scene.add(key);
-    const rim = new THREE.PointLight("#b45cff", 40, 40);
-    rim.position.set(-10, 6, -8);
-    scene.add(rim);
-
-    // 地面網格 + 外圈光環
-    const grid = new THREE.GridHelper(80, 80, "#1fb6ff", "#0f2a4a");
-    (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.55;
+    const grid = new THREE.GridHelper(200, 100, "#123a63", "#0c2240");
     scene.add(grid);
-    const floorRing = new THREE.Mesh(
-      new THREE.RingGeometry(15, 15.15, 128),
-      new THREE.MeshBasicMaterial({ color: "#1fb6ff", transparent: true, opacity: 0.5, side: THREE.DoubleSide }),
-    );
-    floorRing.rotation.x = -Math.PI / 2;
-    floorRing.position.y = 0.01;
-    scene.add(floorRing);
+    const line = new THREE.Group();
+    scene.add(line);
+    ctx.current = { renderer, scene, camera, line, belt: beltTexture(), stations: new Map(), packets: [] };
 
-    // 背景星塵
-    const starGeo = new THREE.BufferGeometry();
-    const starPos = new Float32Array(900 * 3);
-    for (let i = 0; i < 900; i++) {
-      const r = 40 + Math.random() * 50;
-      const th = Math.random() * Math.PI * 2;
-      const ph = Math.random() * Math.PI * 0.5;
-      starPos.set([r * Math.cos(th) * Math.sin(ph), r * Math.cos(ph) * 0.6 + 4, r * Math.sin(th) * Math.sin(ph)], i * 3);
-    }
-    starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
-    const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: "#9fdcff", size: 0.25, transparent: true, opacity: 0.8, fog: false }));
-    scene.add(stars);
-
-    // 中央能量核心：今日賺錢綠、賠錢紅，持倉圍繞它排列
-    const core = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.5, 1),
-      new THREE.MeshStandardMaterial({ color: FLAT, emissive: FLAT, emissiveIntensity: 1.2, wireframe: true }),
-    );
-    core.position.y = 0.6;
-    scene.add(core);
-
-    const towers = new THREE.Group();
-    const ribbon = new THREE.Group();
-    scene.add(towers, ribbon);
-    sceneRef.current = { scene, towers, ribbon, core, pickables: [] };
-
-    const resize = () => {
-      const w = host.clientWidth;
-      const h = host.clientHeight;
-      renderer.setSize(w, h, false);
-      renderer.domElement.style.width = "100%";
-      renderer.domElement.style.height = "100%";
-      camera.aspect = w / Math.max(1, h);
-      camera.updateProjectionMatrix();
-    };
-    const ro = new ResizeObserver(resize);
+    const ro = new ResizeObserver(([e]) => setWidth(Math.round(e.contentRect.width)));
     ro.observe(host);
-    resize();
-
-    // 滑鼠移到塔上顯示詳細資料
-    const raycaster = new THREE.Raycaster();
-    const ndc = new THREE.Vector2();
-    const onMove = (e: PointerEvent) => {
-      const rect = renderer.domElement.getBoundingClientRect();
-      ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
-      raycaster.setFromCamera(ndc, camera);
-      const hit = raycaster.intersectObjects(sceneRef.current?.pickables ?? [], false)[0];
-      const k = hit?.object.userData.key as string | undefined;
-      setHover(k ? { key: k, x: e.clientX - rect.left, y: e.clientY - rect.top } : null);
-      renderer.domElement.style.cursor = k ? "pointer" : "grab";
-    };
-    const onLeave = () => setHover(null);
-    renderer.domElement.addEventListener("pointermove", onMove);
-    renderer.domElement.addEventListener("pointerleave", onLeave);
 
     const clock = new THREE.Clock();
     let frame = 0;
     const animate = () => {
       frame = requestAnimationFrame(animate);
-      const t = clock.getElapsedTime();
-      const still = reducedMotion();
-      if (!still) {
-        core.rotation.y = t * 0.8;
-        core.rotation.x = t * 0.3;
-        core.scale.setScalar(1 + Math.sin(t * 2) * 0.08);
-        stars.rotation.y = t * 0.01;
-        towers.children.forEach((tower, i) => {
-          tower.children.forEach((c) => {
-            if (c.userData.float) c.position.y = tower.userData.height + 1 + Math.sin(t * 1.5 + i) * 0.12;
-          });
-        });
+      const c = ctx.current!;
+      const dt = Math.min(clock.getDelta(), 0.1);
+      const t = clock.elapsedTime;
+      if (!reducedMotion()) {
+        c.belt.offset.x -= dt * 0.6;
+        c.stations.forEach((s) => { s.light.emissiveIntensity = 1.1 + Math.sin(t * 2.4 + s.x) * 0.35; });
       }
-      controls.update();
+      // 報價貨物：沿輸送帶滑進工作站，到了就消失
+      c.packets = c.packets.filter((pk) => {
+        pk.t += dt / 0.9;
+        pk.mesh.position.x = pk.from + (pk.to - pk.from) * Math.min(1, pk.t);
+        if (pk.t < 1) return true;
+        line.remove(pk.mesh);
+        disposeTree(pk.mesh);
+        return false;
+      });
       renderer.render(scene, camera);
     };
     animate();
@@ -308,72 +201,137 @@ export function TradeArena3D({ positions, equity, todayChange }: Props) {
     return () => {
       cancelAnimationFrame(frame);
       ro.disconnect();
-      controls.dispose();
-      renderer.domElement.removeEventListener("pointermove", onMove);
-      renderer.domElement.removeEventListener("pointerleave", onLeave);
-      renderer.domElement.removeEventListener("dblclick", onDbl);
+      ctx.current?.belt.dispose();
       disposeTree(scene);
       renderer.dispose();
       renderer.domElement.remove();
-      sceneRef.current = null;
+      ctx.current = null;
     };
   }, []);
 
-  // 持倉 / 損益變動：重建塔群
+  // 持倉組合或寬度改變：重排生產線、重新算卡片位置（只在這時候，不是每一幀）
+  useLayoutEffect(() => {
+    const c = ctx.current;
+    if (!c || width === 0) return;
+    c.renderer.setSize(width, height, false);
+    const cam = c.camera;
+    cam.aspect = width / height;
+    // 固定鏡頭：距離算到剛好看得到整排工作站
+    const dist = (cols * SPACING) / (2 * Math.tan(THREE.MathUtils.degToRad(FOV / 2)) * cam.aspect);
+    cam.position.set(0, 0.9 + Math.sin(PITCH) * dist, Math.cos(PITCH) * dist);
+    cam.lookAt(0, 0.9, 0);
+    cam.updateProjectionMatrix();
+    cam.updateMatrixWorld();
+    const toPx = (v: THREE.Vector3) => {
+      const p = v.clone().project(cam);
+      return { x: ((p.x + 1) / 2) * width, y: ((1 - p.y) / 2) * height };
+    };
+    // 每一排放在哪個 z：用二分搜尋讓工作站頂端剛好落在第 r 排的位置（卡片在它上方）
+    const rowZ = Array.from({ length: rows }, (_, r) => {
+      const want = CARD_PX + 14 + r * ROW_PX;
+      let lo = -400, hi = Math.cos(PITCH) * dist * 0.8; // lo 越遠、畫面上越高
+      for (let i = 0; i < 40; i++) {
+        const mid = (lo + hi) / 2;
+        if (toPx(new THREE.Vector3(0, STATION_TOP, mid)).y < want) lo = mid; else hi = mid;
+      }
+      return (lo + hi) / 2;
+    });
+
+    c.line.children.slice().forEach((o) => { c.line.remove(o); if (o.userData.disposable) disposeTree(o); });
+    c.stations.forEach((s) => disposeTree(s.group));
+    c.stations.clear();
+    c.packets = [];
+
+    // 每一排的「螢幕 px ↔ 世界 x」換算（鏡頭沒有左右轉，所以是線性的）：欄位依螢幕寬度均分，卡片才不會被切掉
+    const rowScale = rowZ.map((z) => {
+      const x0 = toPx(new THREE.Vector3(0, STATION_TOP, z)).x;
+      const perUnit = toPx(new THREE.Vector3(1, STATION_TOP, z)).x - x0;
+      return { toWorld: (px: number) => (px - x0) / perUnit, colW: colPx / perUnit };
+    });
+    rowZ.forEach((z, r) => {
+      const { toWorld } = rowScale[r];
+      const left = toWorld(0) - 1;
+      const len = toWorld(width) + 1 - left;
+      const mat = new THREE.MeshStandardMaterial({ map: c.belt, metalness: 0.3, roughness: 0.6 });
+      const belt = new THREE.Mesh(new THREE.BoxGeometry(len, 0.16, 1.1), mat);
+      belt.position.set(left + len / 2, 0.08, z);
+      belt.userData.disposable = true;
+      c.line.add(belt);
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(len, 0.06, 0.06),
+        new THREE.MeshBasicMaterial({ color: "#1fb6ff" }),
+      );
+      rail.position.set(left + len / 2, 0.18, z + 0.58);
+      rail.userData.disposable = true;
+      c.line.add(rail);
+    });
+    const next: Record<string, { x: number; y: number }> = {};
+    positions.forEach((item, i) => {
+      const r = Math.floor(i / cols);
+      const z = rowZ[r];
+      const x = rowScale[r].toWorld(colPx * ((i % cols) + 0.5));
+      const st = buildStation(x, z, rowScale[r].colW);
+      c.line.add(st.group);
+      c.stations.set(item.key, st);
+      next[item.key] = toPx(new THREE.Vector3(x, STATION_TOP, z));
+    });
+    setAnchors(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keys, width, cols, rows, height]);
+
+  // 損益變號 → 換燈號顏色；報價變動 → 送一個貨物進工作站
   useEffect(() => {
-    const s = sceneRef.current;
-    if (!s) return;
-    s.towers.children.slice().forEach((c) => { s.towers.remove(c); disposeTree(c); });
-    const built = buildTowers(positions);
-    built.children.slice().forEach((c) => s.towers.add(c));
-    s.pickables = [];
-    s.towers.traverse((o) => { if (o instanceof THREE.Mesh && o.userData.key) s.pickables.push(o); });
+    const c = ctx.current;
+    if (!c) return;
+    const still = reducedMotion();
+    positions.forEach((item) => {
+      const st = c.stations.get(item.key);
+      if (!st) return;
+      const color = statusColor(item.pnl);
+      [st.light, st.panel].forEach((m) => { m.color.copy(color); m.emissive.copy(color); });
+      st.edges.color.copy(color).lerp(new THREE.Color("#ffffff"), 0.2);
+      const prev = lastMark.current[item.key];
+      lastMark.current[item.key] = item.mark;
+      if (still || prev === undefined || prev === null || item.mark === null || item.mark === prev || c.packets.length > 60) return;
+      const tick = item.mark > prev ? UP : DOWN;
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(0.34, 0.34, 0.34),
+        new THREE.MeshStandardMaterial({ color: tick, emissive: tick, emissiveIntensity: 0.8 }),
+      );
+      const from = st.x - st.colW / 2 + 0.2;
+      mesh.position.set(from, 0.36, st.z);
+      c.line.add(mesh);
+      c.packets.push({ mesh, from, to: st.x - 0.9, t: 0 });
+    });
   }, [positions]);
 
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s) return;
-    s.ribbon.children.slice().forEach((c) => { s.ribbon.remove(c); disposeTree(c); });
-    const cols = Math.ceil(Math.sqrt(Math.max(1, positions.length)));
-    buildEquityRibbon(equity, cols * SPACING).children.slice().forEach((c) => s.ribbon.add(c));
-  }, [equity, positions.length]);
-
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s) return;
-    const c = todayChange ? (todayChange > 0 ? UP : DOWN) : FLAT;
-    const mat = s.core.material as THREE.MeshStandardMaterial;
-    mat.color.copy(c);
-    mat.emissive.copy(c);
-  }, [todayChange]);
-
-  const hovered = hover ? itemsRef.current.find((i) => i.key === hover.key) : undefined;
+  const cardWidth = Math.max(150, Math.min(200, colPx - 16));
 
   return (
     <div className="arena">
-      <div className="arena-canvas" ref={hostRef} role="img"
-        aria-label={`3D 持倉場景：${positions.length} 個持倉，塔越高代表損益越大，綠色獲利、紅色虧損；後方光帶是近 7 天總權益`} />
       <div className="arena-hud tl">
-        <span className="hud-tag">TRADE ARENA</span>
-        <span>{positions.length} 個持倉</span>
+        <span className="hud-tag">PRODUCTION LINE</span>
+        <span>{n} 個持倉 · 即時報價</span>
       </div>
-      <div className="arena-hud br">拖曳旋轉 · 滾輪縮放 · 雙擊恢復自動旋轉</div>
+      <div className="arena-stage" style={{ height }}>
+        <div className="arena-canvas" ref={hostRef} role="img"
+          aria-label={`持倉生產線：${n} 個工作站，燈號綠色代表獲利、紅色代表虧損`} />
+        {positions.map((item) => {
+          const a = anchors[item.key];
+          return a ? (
+            <div key={item.key} className="station-anchor" style={{ left: a.x, top: a.y }}>
+              <StationCard item={item} width={cardWidth} />
+            </div>
+          ) : null;
+        })}
+        {failed && <div className="arena-empty">這個瀏覽器不支援 WebGL，無法顯示 3D 場景</div>}
+        {!failed && n === 0 && <div className="arena-empty">生產線待機中 · 目前沒有持倉</div>}
+      </div>
       <div className="arena-legend">
         <span><i style={{ background: "#2bff88" }} />獲利</span>
         <span><i style={{ background: "#ff3d6e" }} />虧損</span>
-        <span>塔高 = 損益大小 · 粗細 = 倉位價值 · 雙光環 = 空單</span>
+        <span>輸送帶上的方塊 = 每一筆報價跳動（綠漲紅跌）</span>
       </div>
-      {failed && <div className="arena-empty">這個瀏覽器不支援 WebGL，無法顯示 3D 場景</div>}
-      {!failed && positions.length === 0 && <div className="arena-empty">目前沒有持倉 · 等待策略進場…</div>}
-      {hovered && hover && (
-        <div className="arena-tip" style={{ left: hover.x, top: hover.y }}>
-          <b>{hovered.position.symbol}</b> <span className="muted">{hovered.position.market} · {hovered.position.side === "long" ? "多單" : "空單"} {hovered.position.leverage}x</span>
-          <div>進場 {fmtPrice(hovered.position.entry_price)} → 現價 {fmtPrice(hovered.mark)}</div>
-          <div>數量 {fmtNum(hovered.position.qty, 4)}</div>
-          <div className={hovered.pnl > 0 ? "up" : hovered.pnl < 0 ? "down" : ""}>未實現 {fmtSigned(hovered.pnl)} USDT</div>
-          {hovered.position.owner && <div className="muted">來源：{hovered.position.owner}</div>}
-        </div>
-      )}
     </div>
   );
 }

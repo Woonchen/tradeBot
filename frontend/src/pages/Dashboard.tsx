@@ -15,8 +15,6 @@ import { PositionsTable } from "./Positions";
 // three.js 很大：只有開了遊戲模式才下載
 const TradeArena3D = lazy(() => import("../components/TradeArena3D").then((m) => ({ default: m.TradeArena3D })));
 
-const NO_POINTS: EquityPoint[] = [];
-
 function Tile({ label, value, sub, cls }: { label: string; value: string; sub?: string; cls?: string }) {
   return (
     <div className="card tile">
@@ -55,7 +53,7 @@ export function Dashboard() {
       </div>
       {game && (
         <Suspense fallback={<div className="arena arena-loading">載入 3D 場景中…</div>}>
-          <TradeArena3D positions={arena} equity={equity.data ?? NO_POINTS} todayChange={s?.equity_change_today} />
+          <TradeArena3D positions={arena} />
         </Suspense>
       )}
       <div className="tiles">
