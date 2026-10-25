@@ -21,8 +21,8 @@ const IDLE = new THREE.Color("#3d5a7a");
 const SPACING = 6; // 工作站間距（世界座標）
 const PITCH = THREE.MathUtils.degToRad(32); // 鏡頭俯角
 const FOV = 18; // 視角窄一點，透視變形小，左右兩端的工作站不會歪太多
-const ROW_PX = 250; // 每條生產線佔的高度（px）
-const CARD_PX = 118; // 卡片高度：第一排工作站上方要留這麼多空間
+const ROW_PX = 310; // 每條生產線佔的高度（px）
+const CARD_PX = 180; // 卡片高度（含停損停利那幾列）：第一排工作站上方要留這麼多空間
 const MIN_COL_PX = 210;
 const STATION_TOP = 1.9;
 
@@ -121,6 +121,20 @@ function IdleCard({ item, width }: { item: Extract<ArenaItem, { kind: "idle" }>;
   );
 }
 
+/** 停損／停利價，加上離現價還有多遠（例如 −2.1%） */
+function ExitRow({ label, price, mark, cls }: { label: string; price: number | null; mark: number | null; cls: string }) {
+  const dist = price !== null && mark ? (price - mark) / mark : null;
+  return (
+    <div className="sc-row">
+      <span className="muted">{label}</span>
+      <span className={price === null ? "muted" : cls}>
+        {price === null ? "未設定" : fmtPrice(price)}
+        {dist !== null && <small className="sc-dist">{dist > 0 ? "+" : dist < 0 ? "−" : ""}{fmtPct(Math.abs(dist))}</small>}
+      </span>
+    </div>
+  );
+}
+
 function StationCard({ item, width }: { item: ArenaItem; width: number }) {
   if (item.kind === "idle") return <IdleCard item={item} width={width} />;
   const { position: p, mark, pnl } = item;
@@ -136,10 +150,15 @@ function StationCard({ item, width }: { item: ArenaItem; width: number }) {
       </div>
       <div className="sc-price"><Flash value={mark}>{fmtPrice(mark)}</Flash></div>
       <div className="sc-row"><span className="muted">進場</span><span>{fmtPrice(p.entry_price)}</span></div>
+      <ExitRow label="停損" price={p.stop_price} mark={mark} cls="down" />
+      <ExitRow label="停利" price={p.take_profit_price} mark={mark} cls="up" />
       <div className={`sc-row sc-pnl ${cls}`}>
         <span>{fmtSigned(pnl)} USDT</span>
         <span>{roe === null ? "" : `${roe > 0 ? "+" : ""}${fmtPct(roe)}`}</span>
       </div>
+      {(p.stop_price !== null || p.take_profit_price !== null) && (
+        <div className="sc-src">{p.native_protection ? "停損停利掛在交易所" : "停損停利由軟體監控"}</div>
+      )}
     </Link>
   );
 }
