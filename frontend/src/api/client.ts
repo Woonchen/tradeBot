@@ -41,6 +41,8 @@ export interface BotSettings {
   margin_mode: "isolated" | "cross"; max_open_positions: number; max_daily_loss_usdt: number;
   stop_loss_pct: number; take_profit_pct: number; execution_mode: "paper" | "binance"; testnet: boolean;
   max_drawdown_pct: number; drawdown: DrawdownStatus[];
+  /** 熔斷後把槓桿降到幾倍、Bot 繼續（只降一次）；0 = 熔斷就停用 Bot */
+  breaker_fallback_leverage: number;
 }
 /** 各市場離權益最高點多遠（回撤熔斷用） */
 export interface DrawdownStatus { market: Market; peak: number; peak_at: string; equity: number | null; drawdown_pct: number | null }

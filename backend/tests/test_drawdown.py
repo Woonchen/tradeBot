@@ -82,3 +82,45 @@ async def test_drawdown_breaker_closes_all_and_disables(env):  # noqa: F811
     await workers.snapshot_balances()
     async with sf() as s:
         assert (await s.get(BotSettings, 1)).enabled
+
+
+async def test_breaker_lowers_leverage_once_then_disables(env):  # noqa: F811
+    from app.models import StrategyConfig
+
+    ex, sf, ad = env
+    workers = SyncWorkers(ex, SimpleNamespace(fresh_price=lambda m, s: None, on_price=lambda *a: None))
+    async with sf() as s:
+        bot = await s.get(BotSettings, 1)
+        bot.max_drawdown_pct, bot.breaker_fallback_leverage, bot.leverage = 20, 2, 5
+        s.add(StrategyConfig(name="a", strategy="ma_trend", symbol="BTCUSDT", market="futures", interval="4h",
+                             params={}, enabled=True, leverage=5))
+        s.add(StrategyConfig(name="b", strategy="ma_trend", symbol="ETHUSDT", market="futures", interval="4h",
+                             params={}, enabled=True, leverage=1))  # 本來就比較低：不動
+        s.add(StrategyConfig(name="c", strategy="ma_trend", symbol="SOLUSDT", market="futures", interval="4h",
+                             params={}, enabled=True))  # 沒自訂：用設定頁的槓桿
+        await s.commit()
+
+    async def crash():
+        await run(ex, ticker="BTCUSDT", market="futures", action="buy", target="long")
+        await workers.snapshot_balances()
+        ad["futures"].usdt -= 3000
+        await workers.snapshot_balances()
+        await workers.snapshot_balances()
+        while not ex.queue.empty():
+            await ex.process(ex.queue.get_nowait())
+        ad["futures"].usdt += 3000  # 讓下一輪從同樣的水位開始
+
+    await crash()  # 第一次：降到 2 倍、平倉、Bot 繼續
+    async with sf() as s:
+        bot = await s.get(BotSettings, 1)
+        levs = {c.name: c.leverage for c in (await s.scalars(select(StrategyConfig))).all()}
+        assert bot.enabled and bot.leverage == 2 and levs == {"a": 2, "b": 1, "c": None}
+        assert await s.scalar(select(Position).where(Position.closed_at.is_(None))) is None
+        log = await s.scalar(select(ActivityLog).where(ActivityLog.message.like("%槓桿已從 5 降為 2 倍%")))
+        assert log is not None and "Bot 繼續運作" in log.message
+
+    await crash()  # 第二次：已經是 2 倍 → 照一般熔斷停用
+    async with sf() as s:
+        bot = await s.get(BotSettings, 1)
+        assert not bot.enabled and bot.leverage == 2
+        assert await s.scalar(select(ActivityLog).where(ActivityLog.message.like("%Bot 已停用%"))) is not None

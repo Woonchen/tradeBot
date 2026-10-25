@@ -183,6 +183,9 @@ class BotSettings(Base):
     max_drawdown_pct: Mapped[float] = mapped_column(Float, default=0, server_default="0")
     # 各市場的權益最高點，例如 {"futures": {"value": 5000.0, "ts": "..."}}；重新啟用 Bot 時清空、從當下重新記錄
     equity_peaks: Mapped[dict | None] = mapped_column(JSON)
+    # 熔斷後降槓桿繼續：> 0 時，熔斷全部平倉後把槓桿高於這個值的合約策略（與設定頁）降到這個值，Bot 繼續運作；
+    # 已經不高於這個值時再觸發，就照一般熔斷停用 Bot（只自動降一次，避免反覆觸發）。0 = 不使用
+    breaker_fallback_leverage: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class StrategyConfig(Base):

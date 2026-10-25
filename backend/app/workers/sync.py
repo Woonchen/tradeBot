@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 from ..engine.executor import Executor
 from ..engine.ledger import LedgerState, apply_fill
 from ..engine.risk import load_bot_settings, update_peaks
-from ..models import BalanceSnapshot, EquitySnapshot, Order, Position, Trade, utcnow
+from ..models import BalanceSnapshot, EquitySnapshot, Order, Position, StrategyConfig, Trade, utcnow
 from ..services.market_stream import MarketHub
 
 log = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class SyncWorkers:
         await self.bus.emit("balance_update", snap.to_dict())
 
     async def _check_drawdown(self, s, equity: dict[str, float], now):
-        """回撤熔斷：權益從最高點回撤超過上限，就全部平倉並停用 Bot。
+        """回撤熔斷：權益從最高點回撤超過上限，就全部平倉並停用 Bot（設了 breaker_fallback_leverage 時改成降槓桿繼續，只降一次）。
 
         要連續兩次快照都超過才觸發，避免交易所偶爾回傳一筆異常的餘額就誤平倉。
         """
@@ -75,10 +75,36 @@ class SyncWorkers:
         self._breaches = 0
         detail = "、".join(f"{MARKET_ZH.get(m, m)}權益 {now_v:.2f} USDT，比最高點 {peak:.2f} 回撤 {(1 - now_v / peak) * 100:.1f}%"
                           for m, peak, now_v in breached)
-        await self.ex.close_all(
-            s, cfg, f"觸發回撤熔斷：{detail}，超過上限 {cfg.max_drawdown_pct:g}%。已送出全部平倉（{{n}} 個部位），Bot 已停用",
-            level="error",
-        )
+        head = f"觸發回撤熔斷：{detail}，超過上限 {cfg.max_drawdown_pct:g}%。已送出全部平倉（{{n}} 個部位）"
+        lowered = await self._lower_leverage(s, cfg)
+        if lowered:
+            # 降槓桿繼續：權益最高點從現在重算；策略的判斷保留，要等判斷改變才重新進場（不會立刻追回去）
+            cfg.equity_peaks = {}
+            await self.ex.close_all(
+                s, cfg, f"{head}；槓桿已從 {lowered} 降為 {cfg.breaker_fallback_leverage} 倍，Bot 繼續運作。"
+                "下次再觸發熔斷就會停用 Bot", level="error", disable=False,
+            )
+        else:
+            await self.ex.close_all(s, cfg, f"{head}，Bot 已停用", level="error")
+
+    async def _lower_leverage(self, s, cfg) -> str | None:
+        """熔斷後降槓桿：把槓桿高於 breaker_fallback_leverage 的合約策略（含設定頁）降下來。
+        回傳被降下來的槓桿（例如「5」或「3～5」）；沒設定、或都已經不高於目標時回傳 None（照一般熔斷停用 Bot）。"""
+        target = cfg.breaker_fallback_leverage or 0
+        if target <= 0:
+            return None
+        strategies = (await s.scalars(select(StrategyConfig).where(
+            StrategyConfig.enabled.is_(True), StrategyConfig.mode == "live", StrategyConfig.market == "futures",
+        ))).all()
+        before = {lev for lev in {st.leverage or cfg.leverage for st in strategies} | {cfg.leverage} if lev > target}
+        if not before:
+            return None
+        for st in strategies:
+            if st.leverage is not None and st.leverage > target:
+                st.leverage = target
+        cfg.leverage = min(cfg.leverage, target)  # 沒自訂槓桿的策略跟著設定頁一起降
+        lo, hi = min(before), max(before)
+        return f"{hi}" if lo == hi else f"{lo}～{hi}"
 
     # ------------------------------------------------------------ 部位
     async def sync_positions(self):

@@ -197,9 +197,10 @@ class Executor:
             )
         return True
 
-    async def close_all(self, s: AsyncSession, cfg, message: str, level: str = "warn") -> list[int]:
-        """停用 Bot，並把所有持倉送出平倉訊號（手動來源，不受 Bot 開關限制）。"""
-        cfg.enabled = False
+    async def close_all(self, s: AsyncSession, cfg, message: str, level: str = "warn", disable: bool = True) -> list[int]:
+        """把所有持倉送出平倉訊號（手動來源，不受 Bot 開關限制）；disable=True 時同時停用 Bot。"""
+        if disable:
+            cfg.enabled = False
         await s.commit()
         positions = (await s.scalars(select(Position).where(Position.closed_at.is_(None)))).all()
         await self.bus.emit("bot", cfg.to_dict(), level=level, category="risk", notify=True,

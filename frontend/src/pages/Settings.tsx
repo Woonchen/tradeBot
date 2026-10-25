@@ -141,6 +141,11 @@ export function Settings() {
           </>}>
             <NumInput value={form.max_drawdown_pct} unit="%" min={0} max={99} onChange={(v) => set("max_drawdown_pct", v)} />
           </Field>
+          <Field label="熔斷後降槓桿" hint={form.breaker_fallback_leverage > 0
+            ? `熔斷全部平倉後，槓桿高於 ${form.breaker_fallback_leverage} 倍的合約策略降到 ${form.breaker_fallback_leverage} 倍，Bot 繼續運作；已經是這個倍數再觸發，就停用 Bot（只自動降一次）。策略要等判斷改變才會重新進場`
+            : "0 = 熔斷就停用 Bot，要手動重新啟用"}>
+            <NumInput value={form.breaker_fallback_leverage} unit="倍" min={0} max={125} step={1} onChange={(v) => set("breaker_fallback_leverage", v)} />
+          </Field>
         </Section>
 
         <Section title="停損與停利" desc="以開倉價為基準的價格變動幅度，每個部位開倉時自動算出觸發價。">

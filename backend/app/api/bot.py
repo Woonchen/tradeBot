@@ -27,6 +27,7 @@ class BotSettingsUpdate(BaseModel):
     stop_loss_pct: float | None = Field(None, ge=0, lt=100)
     take_profit_pct: float | None = Field(None, ge=0)
     max_drawdown_pct: float | None = Field(None, ge=0, lt=100)  # 0 = 不啟用回撤熔斷
+    breaker_fallback_leverage: int | None = Field(None, ge=0, le=125)  # 0 = 熔斷就停用 Bot
 
 
 def _out(cfg, snap: EquitySnapshot | None = None) -> dict:
