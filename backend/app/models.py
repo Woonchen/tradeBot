@@ -122,6 +122,8 @@ class Position(Base):
     last_fill_price: Mapped[float | None] = mapped_column(Float)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # 為什麼平倉（見 engine/sizing.py 的 EXIT_REASONS）；持倉中、或這個欄位加上之前就平掉的部位是 None
+    exit_reason: Mapped[str | None] = mapped_column(String(16))
 
 
 class BalanceSnapshot(Base):

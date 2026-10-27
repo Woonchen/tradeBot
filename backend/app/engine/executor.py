@@ -12,7 +12,7 @@ from ..models import Order, Position, Signal, StrategyConfig, Trade, utcnow
 from ..services.event_bus import EventBus
 from .ledger import LedgerState, apply_fill
 from .risk import Reject, check_open_risk, daily_net_pnl, load_bot_settings, order_rules
-from .sizing import compute_order_size, protection_prices
+from .sizing import compute_order_size, exit_reason_of, protection_prices
 
 log = logging.getLogger(__name__)
 
@@ -197,8 +197,10 @@ class Executor:
             )
         return True
 
-    async def close_all(self, s: AsyncSession, cfg, message: str, level: str = "warn", disable: bool = True) -> list[int]:
-        """把所有持倉送出平倉訊號（手動來源，不受 Bot 開關限制）；disable=True 時同時停用 Bot。"""
+    async def close_all(self, s: AsyncSession, cfg, message: str, level: str = "warn", disable: bool = True,
+                        reason: str = "manual") -> list[int]:
+        """把所有持倉送出平倉訊號（手動來源，不受 Bot 開關限制）；disable=True 時同時停用 Bot。
+        reason="risk" 是熔斷觸發的，部位的平倉原因會記成 risk 而不是 manual。"""
         if disable:
             cfg.enabled = False
         await s.commit()
@@ -207,7 +209,8 @@ class Executor:
                             message=message.format(n=len(positions)))
         ids = []
         for p in positions:
-            sig, _ = await self.submit(source="manual", ticker=p.symbol, market=p.market, action="close", target="flat")
+            sig, _ = await self.submit(source="manual", ticker=p.symbol, market=p.market, action="close", target="flat",
+                                       raw={"reason": reason})
             ids.append(sig.id)
         return ids
 
@@ -221,6 +224,7 @@ class Executor:
         qty = adapter.amount_to_precision(pos.symbol, qty)
         if qty <= 0:
             pos.closed_at = utcnow()
+            pos.exit_reason = exit_reason_of(sig.source, sig.strategy, sig.raw_payload)
             await s.commit()
             await self.bus.emit(
                 "position_update", pos.to_dict(), level="warn", category="order", signal_id=sig.id,
@@ -392,6 +396,8 @@ class Executor:
             pos.realized_pnl += realized
             pos.unrealized_pnl = 0
             pos.closed_at = utcnow()
+            sig = await s.get(Signal, order.signal_id) if order.signal_id else None
+            pos.exit_reason = exit_reason_of(sig.source, sig.strategy, sig.raw_payload) if sig else "external"
             closed, pos = pos, None
         if new.side and not is_dust:
             if pos is None:

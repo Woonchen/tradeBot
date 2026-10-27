@@ -34,6 +34,12 @@ export function Dashboard() {
   const positions = useQuery({ queryKey: ["positions", "open"], queryFn: () => api<Position[]>("/api/positions") });
   const prices = useLivePrices();
   const game = useGameMode();
+  // 遊戲模式：剛平倉的部位要知道平倉原因（停損暈倒、停利放煙火）；跟持倉一樣在成交事件時重新抓
+  const recentClosed = useQuery({
+    queryKey: ["positions", "closed", "recent"], queryFn: () => api<Position[]>("/api/positions?status=closed&limit=10"), enabled: game,
+  });
+  const exits = useMemo(() => Object.fromEntries((recentClosed.data ?? [])
+    .flatMap((p) => p.exit_reason ? [[`${p.market}:${p.symbol}:${p.id}`, p.exit_reason]] : [])), [recentClosed.data]);
   const strategies = useQuery({
     queryKey: ["strategies", "configs"], queryFn: () => api<StrategyConfig[]>("/api/strategies"), enabled: game,
   });
@@ -68,7 +74,7 @@ export function Dashboard() {
       </div>
       {game && (
         <Suspense fallback={<div className="arena arena-loading">載入 3D 場景中…</div>}>
-          <TradeArena3D items={arena} />
+          <TradeArena3D items={arena} exits={exits} />
         </Suspense>
       )}
       <div className="tiles">

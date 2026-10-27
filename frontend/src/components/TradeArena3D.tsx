@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { Link } from "react-router-dom";
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
-import type { Market, Position } from "../api/client";
+import type { ExitReason, Market, Position } from "../api/client";
 import { fmtPct, fmtPrice, fmtSigned } from "../format";
 
 /** 工作站：有持倉（已用即時價格算好損益），或是啟用中的策略在等進場（待機） */
@@ -47,10 +47,11 @@ type Shown = ArenaItem & { leaving?: ExitKind };
 const FIRE_AT = [0.1, 0.55, 1.0]; // 停利出場：三發煙火的發射時間（秒）
 
 /**
- * 後端沒有記錄即時部位為什麼平倉（交易所端平倉只知道「停損/停利/強平/手動」），
- * 所以用消失前最後一個價格判斷：已經碰到（或差 0.3% 內）停損價就是停損、停利價就是停利。
+ * 平倉原因以後端記錄的為準（強平也算「暈倒」）。部位消失時那筆紀錄可能還沒抓回來，
+ * 先用消失前最後一個價格猜：已經碰到（或差 0.3% 內）停損價就是停損、停利價就是停利；紀錄一到再更正。
  */
-function exitKind(item: ArenaItem): ExitKind {
+function exitKind(item: ArenaItem, reason: ExitReason | undefined): ExitKind {
+  if (reason) return reason === "stop" || reason === "liquidation" ? "stop" : reason === "take_profit" ? "tp" : "bye";
   if (item.kind !== "position" || item.mark === null) return "bye";
   const { side, stop_price: sl, take_profit_price: tp } = item.position;
   const dir = side === "long" ? 1 : -1;
@@ -373,11 +374,13 @@ function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
   r.bulb.emissiveIntensity = still ? 1.2 : 1.1 + Math.sin(ph * (r.mood === "sleep" ? 1 : 2.4)) * 0.35;
 }
 
-/** 平倉了：開始告別（燈號維持平倉前的顏色） */
+const BYE_MOOD: Record<ExitKind, Mood> = { stop: "dizzy", tp: "party", bye: "bye" };
+
+/** 平倉了：開始告別（燈號維持平倉前的顏色）。剛開始時後端的平倉原因才送到、跟猜的不一樣，就換成正確的動畫重來 */
 function startBye(r: Robot, item: ArenaItem, kind: ExitKind) {
-  if (r.bye >= 0) return;
+  if (r.bye >= 0 && (r.mood === BYE_MOOD[kind] || r.bye > 0.6)) return;
   r.bye = 0;
-  r.mood = kind === "stop" ? "dizzy" : kind === "tp" ? "party" : "bye";
+  r.mood = BYE_MOOD[kind];
   r.cheer = 0;
   r.fired = kind === "tp" ? 0 : FIRE_AT.length;
   r.byeConfetti = kind !== "stop" && item.kind === "position" && item.pnl > 0;
@@ -473,7 +476,13 @@ function StationCard({ item, width }: { item: Shown; width: number }) {
   );
 }
 
-export function TradeArena3D({ items }: { items: ArenaItem[] }) {
+const NO_EXITS: Record<string, ExitReason> = {};
+
+export function TradeArena3D({ items, exits = NO_EXITS }: {
+  items: ArenaItem[];
+  /** 最近平倉部位的平倉原因（key 跟 ArenaItem.key 一樣） */
+  exits?: Record<string, ExitReason>;
+}) {
   // 剛平倉的持倉先留在原位 FAREWELL_MS 揮手告別，生產線等它走了才重排
   // （在 render 裡就比對，不能等 effect：不然會先重排一次、機器人被拆掉又重新蹦出來）
   const [prevItems, setPrevItems] = useState(items);
@@ -494,9 +503,9 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
   const positions = useMemo(() => {
     const list: Shown[] = [...items];
     [...departed].sort((a, b) => a.index - b.index)
-      .forEach((d) => list.splice(Math.min(d.index, list.length), 0, { ...d.item, leaving: exitKind(d.item) }));
+      .forEach((d) => list.splice(Math.min(d.index, list.length), 0, { ...d.item, leaving: exitKind(d.item, exits[d.item.key]) }));
     return list;
-  }, [items, departed]);
+  }, [items, departed, exits]);
 
   const hostRef = useRef<HTMLDivElement>(null);
   const ctx = useRef<{

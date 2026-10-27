@@ -12,11 +12,15 @@ export interface Trade {
   id: number; order_id: number | null; signal_id: number | null; symbol: string; market: Market; side: "buy" | "sell";
   intent: string; price: number; qty: number; fee_usdt: number; realized_pnl: number; executed_at: string;
 }
+/** stop / take_profit：停損停利；signal：策略或 TradingView 訊號；risk：回撤熔斷；external：在交易所被平掉、看不出原因 */
+export type ExitReason = "stop" | "take_profit" | "signal" | "manual" | "risk" | "liquidation" | "external";
 export interface Position {
   id: number; symbol: string; market: Market; side: "long" | "short"; qty: number; entry_price: number;
   mark_price: number | null; unrealized_pnl: number; realized_pnl: number; leverage: number;
   liquidation_price: number | null; stop_price: number | null; take_profit_price: number | null;
   native_protection: boolean; opened_at: string; closed_at: string | null;
+  /** 為什麼平倉；持倉中、或功能加上之前就平掉的部位是 null */
+  exit_reason: ExitReason | null;
   /** 開倉＋平倉手續費（USDT） */
   fees: number;
   /** 已實現損益扣掉手續費 */

@@ -1,8 +1,13 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { api, type Position } from "../api/client";
+import { api, type ExitReason, type Position } from "../api/client";
 import { useLivePrices } from "../api/liveSocket";
 import { fmtNum, fmtPrice, fmtQty, fmtSigned, fmtTime, livePnl, pnlClass } from "../format";
+
+const EXIT_ZH: Record<ExitReason, string> = {
+  stop: "停損", take_profit: "停利", signal: "訊號", manual: "手動", risk: "熔斷", liquidation: "強平", external: "交易所平倉",
+};
+const exitClass = (r: ExitReason | null) => (r === "stop" || r === "liquidation" ? "down" : r === "take_profit" ? "up" : "muted");
 
 export function PositionsTable({ compact = false, status = "open" }: { compact?: boolean; status?: "open" | "closed" }) {
   const { data = [] } = useQuery({
@@ -26,7 +31,7 @@ export function PositionsTable({ compact = false, status = "open" }: { compact?:
                 <th />
               </>
             ) : (
-              <><th className="num">淨損益</th><th className="num">手續費</th><th>開倉</th><th>平倉</th></>
+              <><th className="num">淨損益</th><th className="num">手續費</th><th>平倉原因</th><th>開倉</th><th>平倉</th></>
             )}
           </tr>
         </thead>
@@ -64,6 +69,7 @@ export function PositionsTable({ compact = false, status = "open" }: { compact?:
                 <>
                   <td className={`num ${pnlClass(p.net)}`} title={`已實現 ${fmtSigned(p.realized_pnl, 4)}，扣開平倉手續費 ${fmtNum(p.fees, 4)}`}>{fmtSigned(p.net, 4)}</td>
                   <td className="num muted">{fmtNum(p.fees, 4)}</td>
+                  <td className={exitClass(p.exit_reason)}>{p.exit_reason ? EXIT_ZH[p.exit_reason] : "—"}</td>
                   <td className="muted">{fmtTime(p.opened_at)}</td>
                   <td className="muted">{p.closed_at && fmtTime(p.closed_at)}</td>
                 </>

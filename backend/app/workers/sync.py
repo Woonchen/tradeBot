@@ -10,6 +10,7 @@ from sqlalchemy import delete, select
 from ..engine.executor import Executor
 from ..engine.ledger import LedgerState, apply_fill
 from ..engine.risk import load_bot_settings, update_peaks
+from ..engine.sizing import external_exit_reason
 from ..models import BalanceSnapshot, EquitySnapshot, Order, Position, StrategyConfig, Trade, utcnow
 from ..services.market_stream import MarketHub
 
@@ -82,10 +83,10 @@ class SyncWorkers:
             cfg.equity_peaks = {}
             await self.ex.close_all(
                 s, cfg, f"{head}；槓桿已從 {lowered} 降為 {cfg.breaker_fallback_leverage} 倍，Bot 繼續運作。"
-                "下次再觸發熔斷就會停用 Bot", level="error", disable=False,
+                "下次再觸發熔斷就會停用 Bot", level="error", disable=False, reason="risk",
             )
         else:
-            await self.ex.close_all(s, cfg, f"{head}，Bot 已停用", level="error")
+            await self.ex.close_all(s, cfg, f"{head}，Bot 已停用", level="error", reason="risk")
 
     async def _lower_leverage(self, s, cfg) -> str | None:
         """熔斷後降槓桿：把槓桿高於 breaker_fallback_leverage 的合約策略（含設定頁）降下來。
@@ -172,10 +173,12 @@ class SyncWorkers:
         p.realized_pnl += realized
         p.unrealized_pnl = 0
         p.closed_at = utcnow()
+        p.exit_reason = external_exit_reason(p.side, price, p.stop_price, p.take_profit_price, p.liquidation_price)
         await s.flush()
+        why = {"stop": "研判為停損", "take_profit": "研判為停利", "liquidation": "研判為強平"}.get(p.exit_reason, "停損/停利/強平/手動")
         await self.bus.emit(
             "trade", None, level="warn", category="trade", notify=True,
-            message=f"{p.symbol} 部位已在交易所被平倉（停損/停利/強平/手動），以標記價格 {price} 估算損益 {realized:+.4f}",
+            message=f"{p.symbol} 部位已在交易所被平倉（{why}），以標記價格 {price} 估算損益 {realized:+.4f}",
         )
 
     # ------------------------------------------------------------ 訂單

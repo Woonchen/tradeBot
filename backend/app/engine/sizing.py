@@ -23,6 +23,34 @@ def protection_prices(side: str, entry: float, stop_pct: float, tp_pct: float) -
     return stop, tp
 
 
+# 平倉原因：stop / take_profit = 停損停利（軟體監控或交易所的原生單）；signal = 策略或 TradingView 的訊號；
+# manual = 手動平倉；risk = 回撤熔斷全部平倉；liquidation = 強平；external = 在交易所被平掉、看不出原因
+EXIT_REASONS = ("stop", "take_profit", "signal", "manual", "risk", "liquidation", "external")
+
+
+def exit_reason_of(source: str, strategy: str, raw: dict | None) -> str:
+    """從平倉訊號判斷原因（record_fill 平倉時用）。"""
+    if source == "protection":
+        return strategy if strategy in ("stop", "take_profit") else "stop"
+    if source == "manual":
+        return "risk" if (raw or {}).get("reason") == "risk" else "manual"
+    return "signal"
+
+
+def external_exit_reason(side: str, price: float, stop: float | None, tp: float | None,
+                         liquidation: float | None, tol: float = 0.003) -> str:
+    """部位在交易所上不見了，只拿得到同步當下的標記價格：碰到（或差 tol 以內）停損停利價就算那個，越過強平價算強平。
+    觸發後價格可能已經彈回去一點，所以留一點容許誤差。"""
+    d = 1 if side == "long" else -1
+    if stop and (price - stop) * d <= price * tol:
+        return "stop"
+    if tp and (tp - price) * d <= price * tol:
+        return "take_profit"
+    if liquidation and (price - liquidation) * d <= price * tol:
+        return "liquidation"
+    return "external"
+
+
 def protection_hit(side: str, mark: float, stop: float | None, tp: float | None) -> str | None:
     if side == "long":
         if stop and mark <= stop:
