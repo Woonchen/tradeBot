@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
@@ -36,10 +36,15 @@ const statusColor = (item: ArenaItem) =>
   item.kind === "idle" ? IDLE : item.pnl > 0 ? UP : item.pnl < 0 ? DOWN : FLAT;
 const chartLink = (symbol: string, market: Market) => `/chart?symbol=${encodeURIComponent(symbol)}&market=${market}`;
 
-type Mood = "happy" | "sad" | "flat" | "sleep";
+type Mood = "happy" | "sad" | "flat" | "sleep" | "bye";
+/** 平倉的工作站會多留一下：先揮手 BYE_WAVE 秒，再花 BYE_EXIT 秒跳起來消失，然後才重排生產線 */
+const BYE_WAVE = 1.6;
+const BYE_EXIT = 0.6;
+const FAREWELL_MS = 2400;
+type Shown = ArenaItem & { leaving?: boolean };
 const moodOf = (item: ArenaItem): Mood =>
   item.kind === "idle" ? "sleep" : item.pnl > 0 ? "happy" : item.pnl < 0 ? "sad" : "flat";
-const SMILE: Record<Mood, number> = { happy: 1, flat: 0.2, sad: -0.85, sleep: 0.25 };
+const SMILE: Record<Mood, number> = { happy: 1, flat: 0.2, sad: -0.85, sleep: 0.25, bye: 0.8 };
 
 /** 每個工作站是一隻小機器人：表情只表現狀態（賺錢開心、虧損冒汗、待機睡覺），數字都在 2D 卡片上 */
 interface Robot {
@@ -62,6 +67,8 @@ interface Robot {
   pop: number; // 出場動畫進度 0→1
   chomp: number; // 吃到金幣的壓扁量，會自己消退
   cheer: number; // 轉虧為盈的大跳剩餘秒數
+  bye: number; // 平倉告別開始後經過的秒數，-1 = 沒有要走
+  byeConfetti: boolean; // 賺錢收工：跳走的時候放彩帶
   blinkAt: number;
 }
 interface Packet { obj: THREE.Group; robot: Robot; from: number; t: number }
@@ -200,7 +207,7 @@ function buildRobot(x: number, z: number, colW: number, zTex: THREE.Texture): Ro
   return {
     root, body, shadow, eyes, mouth, cheeks, arms, antenna, bulb, belly, drop, zzz,
     x, z, colW, seed: Math.random() * 10,
-    mood: "flat", smile: SMILE.flat, blush: 0, pop: 1, chomp: 0, cheer: 0, blinkAt: 1 + Math.random() * 3,
+    mood: "flat", smile: SMILE.flat, blush: 0, pop: 1, chomp: 0, cheer: 0, bye: -1, byeConfetti: false, blinkAt: 1 + Math.random() * 3,
   };
 }
 
@@ -210,7 +217,7 @@ const easeOutBack = (k: number) => 1 + 2.7 * Math.pow(k - 1, 3) + 1.7 * Math.pow
 function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
   const follow = still ? 1 : Math.min(1, dt * 6);
   r.smile += (SMILE[r.mood] - r.smile) * follow;
-  r.blush += ((r.mood === "happy" ? 1 : 0) - r.blush) * follow;
+  r.blush += ((r.mood === "happy" || r.mood === "bye" ? 1 : 0) - r.blush) * follow;
   r.pop = still ? 1 : Math.min(1, r.pop + dt / 0.6);
   r.chomp = Math.max(0, r.chomp - dt * 4);
   r.cheer = Math.max(0, r.cheer - dt);
@@ -233,6 +240,11 @@ function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
     tiltZ = Math.sin(ph * 0.8) * 0.05;
     armR = armL = 0.1;
     antX = 0.3;
+  } else if (m === "bye") {
+    armR = 1.3 + Math.sin(ph * 11) * 0.7; // 用力揮手掰掰
+    armL = 0.15;
+    tiltZ = Math.sin(ph * 5.5) * 0.08; // 身體跟著揮手左右晃
+    antZ = Math.sin(ph * 5.5) * 0.25;
   } else if (m === "flat") {
     tiltZ = Math.sin(ph * 1.2) * 0.03;
     antZ = Math.sin(ph * 2) * 0.08;
@@ -241,10 +253,18 @@ function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
     hop += Math.sin((1 - r.cheer / 0.8) * Math.PI) * 0.32;
     armR = armL = 2.4;
   }
-  const s = Math.max(0.001, easeOutBack(THREE.MathUtils.clamp(r.pop, 0, 1)));
+  // 揮完手：轉一圈跳起來，越跳越小直到消失
+  let leave = 0;
+  if (r.bye >= 0 && !still) {
+    r.bye += dt;
+    leave = THREE.MathUtils.clamp((r.bye - BYE_WAVE) / BYE_EXIT, 0, 1);
+    hop += Math.sin(leave * Math.PI * 0.5) * 1.4;
+    if (leave > 0) armR = armL = 2.6;
+  }
+  const s = Math.max(0.001, easeOutBack(THREE.MathUtils.clamp(r.pop, 0, 1)) * (1 - leave * leave));
   const sx = 1 + 0.1 * r.chomp, sy = 1 - 0.14 * r.chomp + breathe;
   r.body.position.y = hop;
-  r.body.rotation.set(tiltX, 0, tiltZ);
+  r.body.rotation.set(tiltX, leave * Math.PI * 2, tiltZ);
   r.body.scale.set(s * sx, s * sy, s * sx);
   r.shadow.scale.setScalar(Math.max(0.01, s * (1 - hop * 1.2)));
   r.arms[1].rotation.z = armR;
@@ -252,7 +272,7 @@ function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
   r.antenna.rotation.set(antX, 0, antZ);
 
   // 眨眼
-  let eyeY = r.mood === "happy" ? 0.7 : r.mood === "sad" ? 0.85 : 1;
+  let eyeY = r.mood === "happy" || r.mood === "bye" ? 0.7 : r.mood === "sad" ? 0.85 : 1;
   if (!still && t > r.blinkAt) {
     eyeY = 0.1;
     if (t > r.blinkAt + 0.12) r.blinkAt = t + 2 + Math.random() * 3.5;
@@ -280,6 +300,15 @@ function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
     mat.opacity = Math.sin(k * Math.PI) * 0.9;
   });
   r.bulb.emissiveIntensity = still ? 1.2 : 1.1 + Math.sin(ph * (r.mood === "sleep" ? 1 : 2.4)) * 0.35;
+}
+
+/** 平倉了：開始揮手告別（燈號維持平倉前的顏色） */
+function startBye(r: Robot, item: ArenaItem) {
+  if (r.bye >= 0) return;
+  r.bye = 0;
+  r.mood = "bye";
+  r.cheer = 0;
+  r.byeConfetti = item.kind === "position" && item.pnl > 0;
 }
 
 /** 換心情、換燈號顏色；轉成獲利時回傳 true（讓外面放彩帶） */
@@ -342,18 +371,20 @@ function ExitRow({ label, price, mark, cls }: { label: string; price: number | n
   );
 }
 
-function StationCard({ item, width }: { item: ArenaItem; width: number }) {
+function StationCard({ item, width }: { item: Shown; width: number }) {
   if (item.kind === "idle") return <IdleCard item={item} width={width} />;
   const { position: p, mark, pnl } = item;
   const margin = (p.qty * p.entry_price) / Math.max(1, p.leverage);
   const roe = margin > 0 ? pnl / margin : null;
   const cls = pnl > 0 ? "up" : pnl < 0 ? "down" : "";
   return (
-    <Link to={chartLink(p.symbol, p.market)} className={`station-card ${cls}`} style={{ width }}
+    <Link to={chartLink(p.symbol, p.market)} className={`station-card ${cls}${item.leaving ? " leaving" : ""}`} style={{ width }}
       title={`查看 ${p.symbol} 的 K 線與買賣點`}>
       <div className="sc-head">
         <b>{p.symbol}</b>
-        <span className={`badge ${p.side}`}>{p.side === "long" ? "▲ 多" : "▼ 空"} {p.leverage}x</span>
+        {item.leaving
+          ? <span className="badge">👋 已平倉</span>
+          : <span className={`badge ${p.side}`}>{p.side === "long" ? "▲ 多" : "▼ 空"} {p.leverage}x</span>}
       </div>
       <div className="sc-price"><Flash value={mark}>{fmtPrice(mark)}</Flash></div>
       <div className="sc-row"><span className="muted">進場</span><span>{fmtPrice(p.entry_price)}</span></div>
@@ -370,7 +401,31 @@ function StationCard({ item, width }: { item: ArenaItem; width: number }) {
   );
 }
 
-export function TradeArena3D({ items: positions }: { items: ArenaItem[] }) {
+export function TradeArena3D({ items }: { items: ArenaItem[] }) {
+  // 剛平倉的持倉先留在原位 FAREWELL_MS 揮手告別，生產線等它走了才重排
+  // （在 render 裡就比對，不能等 effect：不然會先重排一次、機器人被拆掉又重新蹦出來）
+  const [prevItems, setPrevItems] = useState(items);
+  const [departed, setDeparted] = useState<{ item: ArenaItem; index: number; until: number }[]>([]);
+  if (prevItems !== items) {
+    const now = new Set(items.map((i) => i.key));
+    const gone = prevItems.flatMap((item, index) =>
+      item.kind === "position" && !now.has(item.key) ? [{ item, index, until: Date.now() + FAREWELL_MS }] : []);
+    setPrevItems(items);
+    if (gone.length) setDeparted((d) => [...d, ...gone]);
+  }
+  useEffect(() => {
+    if (!departed.length) return;
+    const next = Math.min(...departed.map((d) => d.until));
+    const t = setTimeout(() => setDeparted((d) => d.filter((x) => x.until > Date.now())), next - Date.now());
+    return () => clearTimeout(t);
+  }, [departed]);
+  const positions = useMemo(() => {
+    const list: Shown[] = [...items];
+    [...departed].sort((a, b) => a.index - b.index)
+      .forEach((d) => list.splice(Math.min(d.index, list.length), 0, { ...d.item, leaving: true }));
+    return list;
+  }, [items, departed]);
+
   const hostRef = useRef<HTMLDivElement>(null);
   const ctx = useRef<{
     renderer: THREE.WebGLRenderer;
@@ -390,7 +445,8 @@ export function TradeArena3D({ items: positions }: { items: ArenaItem[] }) {
   const seen = useRef<Set<string> | null>(null); // 看過的工作站：新開的倉才「啵」出場、放彩帶
 
   const n = positions.length;
-  const held = positions.filter((i) => i.kind === "position").length;
+  const held = items.filter((i) => i.kind === "position").length;
+  const idle = items.length - held;
   // 一排最多放幾站看寬度；鏡頭遠近也只看寬度，站少的時候不會被放大，而是置中排列
   const capacity = Math.max(1, Math.min(6, Math.floor(width / MIN_COL_PX)));
   const cols = Math.min(capacity, Math.max(1, n));
@@ -467,7 +523,10 @@ export function TradeArena3D({ items: positions }: { items: ArenaItem[] }) {
       const t = clock.elapsedTime;
       const still = reducedMotion();
       if (!still) c.belt.offset.x -= dt * 0.6;
-      c.robots.forEach((r) => animateRobot(r, t, dt, still));
+      c.robots.forEach((r) => {
+        animateRobot(r, t, dt, still);
+        if (r.byeConfetti && r.bye > BYE_WAVE) { r.byeConfetti = false; burst(r); }
+      });
       // 報價金幣：沿輸送帶滾過去，最後一跳跳進機器人嘴裡
       c.packets = c.packets.filter((pk) => {
         pk.t += dt / 1.1;
@@ -590,6 +649,7 @@ export function TradeArena3D({ items: positions }: { items: ArenaItem[] }) {
       const x = rowScale[r].toWorld(width / 2 + ((i % cols) - (inRow - 1) / 2) * colPx);
       const robot = buildRobot(x, z, rowScale[r].colW, c.zTex);
       applyStatus(robot, item, true);
+      if (item.leaving) startBye(robot, item);
       if (!known.has(item.key)) {
         robot.pop = firstLayout ? -i * 0.15 : 0; // 第一次進場一隻接一隻跳出來
         if (!firstLayout && item.kind === "position") burst(robot); // 新開倉，放彩帶
@@ -611,6 +671,7 @@ export function TradeArena3D({ items: positions }: { items: ArenaItem[] }) {
     positions.forEach((item) => {
       const r = c.robots.get(item.key);
       if (!r) return;
+      if (item.leaving) { startBye(r, item); return; }
       if (applyStatus(r, item, false)) burst(r);
       if (item.kind === "idle") return; // 待機的沒有即時報價
       const prev = lastMark.current[item.key];
@@ -638,11 +699,11 @@ export function TradeArena3D({ items: positions }: { items: ArenaItem[] }) {
     <div className="arena">
       <div className="arena-hud tl">
         <span className="hud-tag">PRODUCTION LINE</span>
-        <span>{held} 個持倉 · {n - held} 個待機</span>
+        <span>{held} 個持倉 · {idle} 個待機</span>
       </div>
       <div className="arena-stage" style={{ height }}>
         <div className="arena-canvas" ref={hostRef} role="img"
-          aria-label={`持倉生產線：${held} 個持倉、${n - held} 個待機的機器人，天線燈綠色代表獲利、紅色代表虧損、灰色代表待機`} />
+          aria-label={`持倉生產線：${held} 個持倉、${idle} 個待機的機器人，天線燈綠色代表獲利、紅色代表虧損、灰色代表待機`} />
         {positions.map((item) => {
           const a = anchors[item.key];
           return a ? (
