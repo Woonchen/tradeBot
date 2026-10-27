@@ -36,15 +36,32 @@ const statusColor = (item: ArenaItem) =>
   item.kind === "idle" ? IDLE : item.pnl > 0 ? UP : item.pnl < 0 ? DOWN : FLAT;
 const chartLink = (symbol: string, market: Market) => `/chart?symbol=${encodeURIComponent(symbol)}&market=${market}`;
 
-type Mood = "happy" | "sad" | "flat" | "sleep" | "bye";
+type Mood = "happy" | "sad" | "flat" | "sleep" | "bye" | "dizzy" | "party";
 /** 平倉的工作站會多留一下：先揮手 BYE_WAVE 秒，再花 BYE_EXIT 秒跳起來消失，然後才重排生產線 */
 const BYE_WAVE = 1.6;
 const BYE_EXIT = 0.6;
 const FAREWELL_MS = 2400;
-type Shown = ArenaItem & { leaving?: boolean };
+/** 平倉方式：碰到停損（暈眩倒下）、碰到停利（放煙火）、其他（揮手掰掰） */
+type ExitKind = "stop" | "tp" | "bye";
+type Shown = ArenaItem & { leaving?: ExitKind };
+const FIRE_AT = [0.1, 0.55, 1.0]; // 停利出場：三發煙火的發射時間（秒）
+
+/**
+ * 後端沒有記錄即時部位為什麼平倉（交易所端平倉只知道「停損/停利/強平/手動」），
+ * 所以用消失前最後一個價格判斷：已經碰到（或差 0.3% 內）停損價就是停損、停利價就是停利。
+ */
+function exitKind(item: ArenaItem): ExitKind {
+  if (item.kind !== "position" || item.mark === null) return "bye";
+  const { side, stop_price: sl, take_profit_price: tp } = item.position;
+  const dir = side === "long" ? 1 : -1;
+  const tol = item.mark * 0.003;
+  if (sl !== null && (item.mark - sl) * dir <= tol) return "stop";
+  if (tp !== null && (tp - item.mark) * dir <= tol) return "tp";
+  return "bye";
+}
 const moodOf = (item: ArenaItem): Mood =>
   item.kind === "idle" ? "sleep" : item.pnl > 0 ? "happy" : item.pnl < 0 ? "sad" : "flat";
-const SMILE: Record<Mood, number> = { happy: 1, flat: 0.2, sad: -0.85, sleep: 0.25, bye: 0.8 };
+const SMILE: Record<Mood, number> = { happy: 1, flat: 0.2, sad: -0.85, sleep: 0.25, bye: 0.8, dizzy: -0.35, party: 1 };
 
 /** 每個工作站是一隻小機器人：表情只表現狀態（賺錢開心、虧損冒汗、待機睡覺），數字都在 2D 卡片上 */
 interface Robot {
@@ -69,10 +86,17 @@ interface Robot {
   cheer: number; // 轉虧為盈的大跳剩餘秒數
   bye: number; // 平倉告別開始後經過的秒數，-1 = 沒有要走
   byeConfetti: boolean; // 賺錢收工：跳走的時候放彩帶
+  fired: number; // 停利煙火已經放了幾發
+  xEyes: THREE.Group[]; // 暈眩時的 ✕ 眼
+  stars: THREE.Sprite[]; // 暈眩時繞著頭轉的星星
   blinkAt: number;
 }
 interface Packet { obj: THREE.Group; robot: Robot; from: number; t: number }
-interface Particle { mesh: THREE.Mesh; v: THREE.Vector3; spin: THREE.Vector3; life: number }
+interface Particle {
+  mesh: THREE.Mesh; v: THREE.Vector3; spin: THREE.Vector3; life: number;
+  gravity: number; drag: number;
+  rocket?: THREE.Color; // 煙火彈：時間到就炸開成這個顏色的火花
+}
 
 /** 輸送帶表面的斜紋貼圖（捲動 offset 就是帶子在動） */
 function beltTexture() {
@@ -96,16 +120,16 @@ function beltTexture() {
   return tex;
 }
 
-/** 睡覺冒出來的「Z」 */
-function zTexture() {
+/** 單一字元的貼圖：睡覺冒出來的「Z」、暈眩時的星星 */
+function glyphTexture(glyph: string, color: string) {
   const c = document.createElement("canvas");
   c.width = c.height = 64;
   const ctx = c.getContext("2d")!;
   ctx.font = "bold 52px ui-rounded, system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillStyle = "#a9c8ff";
-  ctx.fillText("Z", 32, 34);
+  ctx.fillStyle = color;
+  ctx.fillText(glyph, 32, 34);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -120,7 +144,7 @@ function disposeTree(obj: THREE.Object3D) {
   });
 }
 
-function buildRobot(x: number, z: number, colW: number, zTex: THREE.Texture): Robot {
+function buildRobot(x: number, z: number, colW: number, zTex: THREE.Texture, starTex: THREE.Texture): Robot {
   const root = new THREE.Group();
   root.position.set(x, BELT_TOP, z);
   root.scale.setScalar(ROBOT_SCALE);
@@ -157,6 +181,18 @@ function buildRobot(x: number, z: number, colW: number, zTex: THREE.Texture): Ro
     eye.position.set(s * 0.2, 0.93, FACE_Z);
     body.add(eye);
     return eye;
+  });
+  const xEyes = [-1, 1].map((s) => {
+    const g = new THREE.Group();
+    for (const a of [-1, 1]) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.04, 0.02), glow);
+      bar.rotation.z = (a * Math.PI) / 4;
+      g.add(bar);
+    }
+    g.position.set(s * 0.2, 0.93, FACE_Z);
+    g.visible = false;
+    body.add(g);
+    return g;
   });
   // 半圈 torus：scale.y 正的是微笑、負的是嘴角下垂，中間平滑過渡
   const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.026, 8, 20, Math.PI), glow);
@@ -204,10 +240,17 @@ function buildRobot(x: number, z: number, colW: number, zTex: THREE.Texture): Ro
     body.add(sp);
     return sp;
   });
+  const stars = [0, 1, 2].map(() => {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: starTex, transparent: true, depthWrite: false }));
+    sp.visible = false;
+    sp.scale.setScalar(0.24);
+    body.add(sp);
+    return sp;
+  });
   return {
-    root, body, shadow, eyes, mouth, cheeks, arms, antenna, bulb, belly, drop, zzz,
+    root, body, shadow, eyes, xEyes, stars, mouth, cheeks, arms, antenna, bulb, belly, drop, zzz,
     x, z, colW, seed: Math.random() * 10,
-    mood: "flat", smile: SMILE.flat, blush: 0, pop: 1, chomp: 0, cheer: 0, bye: -1, byeConfetti: false, blinkAt: 1 + Math.random() * 3,
+    mood: "flat", smile: SMILE.flat, blush: 0, pop: 1, chomp: 0, cheer: 0, bye: -1, byeConfetti: false, fired: 0, blinkAt: 1 + Math.random() * 3,
   };
 }
 
@@ -217,7 +260,7 @@ const easeOutBack = (k: number) => 1 + 2.7 * Math.pow(k - 1, 3) + 1.7 * Math.pow
 function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
   const follow = still ? 1 : Math.min(1, dt * 6);
   r.smile += (SMILE[r.mood] - r.smile) * follow;
-  r.blush += ((r.mood === "happy" || r.mood === "bye" ? 1 : 0) - r.blush) * follow;
+  r.blush += ((r.mood === "happy" || r.mood === "bye" || r.mood === "party" ? 1 : 0) - r.blush) * follow;
   r.pop = still ? 1 : Math.min(1, r.pop + dt / 0.6);
   r.chomp = Math.max(0, r.chomp - dt * 4);
   r.cheer = Math.max(0, r.cheer - dt);
@@ -245,6 +288,18 @@ function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
     armL = 0.15;
     tiltZ = Math.sin(ph * 5.5) * 0.08; // 身體跟著揮手左右晃
     antZ = Math.sin(ph * 5.5) * 0.25;
+  } else if (m === "party") {
+    hop = Math.abs(Math.sin(ph * 7)) * 0.25; // 興奮地一直跳
+    armR = armL = 2.3 + Math.sin(ph * 14) * 0.3;
+    antZ = Math.sin(ph * 10) * 0.3;
+  } else if (m === "dizzy") {
+    // 頭昏眼花：身體畫圈晃、手軟軟地甩、天線跟著繞
+    tiltX = Math.sin(ph * 7) * 0.13;
+    tiltZ = Math.cos(ph * 7) * 0.13;
+    armR = 0.3 + Math.sin(ph * 7) * 0.3;
+    armL = 0.3 - Math.sin(ph * 7) * 0.3;
+    antX = Math.sin(ph * 7) * 0.45;
+    antZ = Math.cos(ph * 7) * 0.45;
   } else if (m === "flat") {
     tiltZ = Math.sin(ph * 1.2) * 0.03;
     antZ = Math.sin(ph * 2) * 0.08;
@@ -253,18 +308,27 @@ function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
     hop += Math.sin((1 - r.cheer / 0.8) * Math.PI) * 0.32;
     armR = armL = 2.4;
   }
-  // 揮完手：轉一圈跳起來，越跳越小直到消失
-  let leave = 0;
+  // 告別的最後一段：停損是往旁邊倒下去再縮掉，其他是轉一圈跳起來越跳越小
+  let leave = 0, gone = 0, spinY = 0;
   if (r.bye >= 0 && !still) {
     r.bye += dt;
     leave = THREE.MathUtils.clamp((r.bye - BYE_WAVE) / BYE_EXIT, 0, 1);
-    hop += Math.sin(leave * Math.PI * 0.5) * 1.4;
-    if (leave > 0) armR = armL = 2.6;
+    if (r.mood === "dizzy") {
+      const fall = Math.min(1, leave * 1.8);
+      tiltZ = -(1 - Math.pow(1 - fall, 3)) * Math.PI / 2;
+      tiltX = 0;
+      gone = THREE.MathUtils.smoothstep(leave, 0.55, 1);
+    } else if (leave > 0) {
+      hop += Math.sin(leave * Math.PI * 0.5) * 1.4;
+      armR = armL = 2.6;
+      spinY = leave * Math.PI * 2;
+      gone = leave * leave;
+    }
   }
-  const s = Math.max(0.001, easeOutBack(THREE.MathUtils.clamp(r.pop, 0, 1)) * (1 - leave * leave));
+  const s = Math.max(0.001, easeOutBack(THREE.MathUtils.clamp(r.pop, 0, 1)) * (1 - gone));
   const sx = 1 + 0.1 * r.chomp, sy = 1 - 0.14 * r.chomp + breathe;
   r.body.position.y = hop;
-  r.body.rotation.set(tiltX, leave * Math.PI * 2, tiltZ);
+  r.body.rotation.set(tiltX, spinY, tiltZ);
   r.body.scale.set(s * sx, s * sy, s * sx);
   r.shadow.scale.setScalar(Math.max(0.01, s * (1 - hop * 1.2)));
   r.arms[1].rotation.z = armR;
@@ -272,13 +336,20 @@ function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
   r.antenna.rotation.set(antX, 0, antZ);
 
   // 眨眼
-  let eyeY = r.mood === "happy" || r.mood === "bye" ? 0.7 : r.mood === "sad" ? 0.85 : 1;
+  let eyeY = r.mood === "happy" || r.mood === "bye" || r.mood === "party" ? 0.7 : r.mood === "sad" ? 0.85 : 1;
   if (!still && t > r.blinkAt) {
     eyeY = 0.1;
     if (t > r.blinkAt + 0.12) r.blinkAt = t + 2 + Math.random() * 3.5;
   }
   if (r.mood === "sleep") eyeY = 0.12;
-  r.eyes.forEach((e) => e.scale.set(1, eyeY, 0.5));
+  const dizzy = r.mood === "dizzy";
+  r.eyes.forEach((e) => { e.visible = !dizzy; e.scale.set(1, eyeY, 0.5); });
+  r.xEyes.forEach((g, i) => { g.visible = dizzy; g.rotation.z = still ? 0 : ph * (i ? 6 : -6); }); // ✕ 眼轉圈圈
+  r.stars.forEach((sp, i) => {
+    sp.visible = dizzy && !still;
+    const a = ph * 4 + (i * Math.PI * 2) / 3;
+    sp.position.set(Math.cos(a) * 0.5, 1.62 + Math.sin(a * 2) * 0.05, Math.sin(a) * 0.35);
+  });
   r.mouth.scale.set(1 + r.chomp * 0.5, Math.sign(r.smile || 1) * Math.max(0.22, Math.abs(r.smile)) + r.chomp, 1);
   r.cheeks.forEach((c) => c.scale.setScalar(Math.max(0.001, r.blush)));
 
@@ -302,13 +373,14 @@ function animateRobot(r: Robot, t: number, dt: number, still: boolean) {
   r.bulb.emissiveIntensity = still ? 1.2 : 1.1 + Math.sin(ph * (r.mood === "sleep" ? 1 : 2.4)) * 0.35;
 }
 
-/** 平倉了：開始揮手告別（燈號維持平倉前的顏色） */
-function startBye(r: Robot, item: ArenaItem) {
+/** 平倉了：開始告別（燈號維持平倉前的顏色） */
+function startBye(r: Robot, item: ArenaItem, kind: ExitKind) {
   if (r.bye >= 0) return;
   r.bye = 0;
-  r.mood = "bye";
+  r.mood = kind === "stop" ? "dizzy" : kind === "tp" ? "party" : "bye";
   r.cheer = 0;
-  r.byeConfetti = item.kind === "position" && item.pnl > 0;
+  r.fired = kind === "tp" ? 0 : FIRE_AT.length;
+  r.byeConfetti = kind !== "stop" && item.kind === "position" && item.pnl > 0;
 }
 
 /** 換心情、換燈號顏色；轉成獲利時回傳 true（讓外面放彩帶） */
@@ -378,12 +450,12 @@ function StationCard({ item, width }: { item: Shown; width: number }) {
   const roe = margin > 0 ? pnl / margin : null;
   const cls = pnl > 0 ? "up" : pnl < 0 ? "down" : "";
   return (
-    <Link to={chartLink(p.symbol, p.market)} className={`station-card ${cls}${item.leaving ? " leaving" : ""}`} style={{ width }}
+    <Link to={chartLink(p.symbol, p.market)} className={`station-card ${cls}${item.leaving ? ` leaving ${item.leaving}` : ""}`} style={{ width }}
       title={`查看 ${p.symbol} 的 K 線與買賣點`}>
       <div className="sc-head">
         <b>{p.symbol}</b>
         {item.leaving
-          ? <span className="badge">👋 已平倉</span>
+          ? <span className="badge">{item.leaving === "stop" ? "💫 停損出場" : item.leaving === "tp" ? "🎆 停利出場" : "👋 已平倉"}</span>
           : <span className={`badge ${p.side}`}>{p.side === "long" ? "▲ 多" : "▼ 空"} {p.leverage}x</span>}
       </div>
       <div className="sc-price"><Flash value={mark}>{fmtPrice(mark)}</Flash></div>
@@ -422,7 +494,7 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
   const positions = useMemo(() => {
     const list: Shown[] = [...items];
     [...departed].sort((a, b) => a.index - b.index)
-      .forEach((d) => list.splice(Math.min(d.index, list.length), 0, { ...d.item, leaving: true }));
+      .forEach((d) => list.splice(Math.min(d.index, list.length), 0, { ...d.item, leaving: exitKind(d.item) }));
     return list;
   }, [items, departed]);
 
@@ -434,6 +506,7 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
     line: THREE.Group;
     belt: THREE.CanvasTexture;
     zTex: THREE.CanvasTexture;
+    starTex: THREE.CanvasTexture;
     robots: Map<string, Robot>;
     packets: Packet[];
     particles: Particle[];
@@ -473,8 +546,41 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
         mesh,
         v: new THREE.Vector3(Math.cos(a) * sp, 2.6 + Math.random() * 2, Math.sin(a) * sp * 0.6),
         spin: new THREE.Vector3(Math.random() * 10, Math.random() * 10, Math.random() * 10),
-        life: 1.4 + Math.random() * 0.5,
+        life: 1.4 + Math.random() * 0.5, gravity: 6, drag: 0.8,
       });
+    }
+  };
+
+  /** 一顆會發光的小火花（煙火彈本身、尾巴和炸開的碎片） */
+  const spark = (pos: THREE.Vector3, v: THREE.Vector3, color: THREE.Color, life: number, size = 0.05, rocket?: THREE.Color) => {
+    const c = ctx.current!;
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(size, 6, 4),
+      new THREE.MeshBasicMaterial({ color, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    mesh.position.copy(pos);
+    c.line.add(mesh);
+    c.particles.push({ mesh, v, spin: new THREE.Vector3(), life, gravity: rocket ? 7 : 2.5, drag: rocket ? 0 : 2.4, rocket });
+  };
+
+  /** 停利出場：從機器人兩側和前面往上射煙火，飛到頂點炸開 */
+  const launch = (r: Robot, n: number) => {
+    const c = ctx.current;
+    if (!c || c.particles.length > 400) return;
+    const side = [-1, 1, 0][n % 3];
+    const color = new THREE.Color(CONFETTI[(n * 2 + Math.floor(Math.random() * 3)) % CONFETTI.length]);
+    // 往鏡頭這邊偏一點（z 大），炸開的位置在畫面上會低一點，不會躲到卡片後面
+    spark(new THREE.Vector3(r.x + side * 1.4, BELT_TOP, r.z + 0.9 + (side === 0 ? 0.4 : 0)),
+      new THREE.Vector3(side * 0.5, side === 0 ? 6.4 : 6, 0.3), color, 0.5, 0.09, color);
+  };
+  const explode = (pos: THREE.Vector3, color: THREE.Color) => {
+    const white = new THREE.Color("#ffffff");
+    for (let i = 0; i < 56; i++) {
+      // 球面上均勻撒出去，z 壓扁一點讓花比較圓
+      const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, k = Math.sqrt(1 - u * u);
+      const sp = 4 + Math.random() * 1.5;
+      spark(pos, new THREE.Vector3(Math.cos(a) * k * sp, u * sp, Math.sin(a) * k * sp * 0.5),
+        i % 5 === 0 ? white : color, 1 + Math.random() * 0.5, 0.065);
     }
   };
 
@@ -507,7 +613,8 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
     const line = new THREE.Group();
     scene.add(line);
     ctx.current = {
-      renderer, scene, camera, line, belt: beltTexture(), zTex: zTexture(),
+      renderer, scene, camera, line, belt: beltTexture(),
+      zTex: glyphTexture("Z", "#a9c8ff"), starTex: glyphTexture("★", "#ffd84d"),
       robots: new Map(), packets: [], particles: [],
     };
 
@@ -526,6 +633,7 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
       c.robots.forEach((r) => {
         animateRobot(r, t, dt, still);
         if (r.byeConfetti && r.bye > BYE_WAVE) { r.byeConfetti = false; burst(r); }
+        if (!still && r.fired < FIRE_AT.length && r.bye > FIRE_AT[r.fired]) launch(r, r.fired++);
       });
       // 報價金幣：沿輸送帶滾過去，最後一跳跳進機器人嘴裡
       c.packets = c.packets.filter((pk) => {
@@ -553,10 +661,17 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
         return false;
       });
       // 彩帶：往上噴、重力往下掉、邊轉邊淡出
+      // 煙火彈飛行時一路掉火花當尾巴；時間到就炸開
+      const trail: THREE.Vector3[] = [];
+      const booms: [THREE.Vector3, THREE.Color][] = [];
       c.particles = c.particles.filter((p) => {
         p.life -= dt;
-        p.v.y -= 6 * dt;
-        p.v.multiplyScalar(1 - dt * 0.8);
+        p.v.y -= p.gravity * dt;
+        p.v.multiplyScalar(Math.max(0, 1 - dt * p.drag));
+        if (p.rocket) {
+          trail.push(p.mesh.position.clone());
+          if (p.life <= 0) booms.push([p.mesh.position.clone(), p.rocket]);
+        }
         p.mesh.position.addScaledVector(p.v, dt);
         p.mesh.rotation.x += p.spin.x * dt;
         p.mesh.rotation.y += p.spin.y * dt;
@@ -567,6 +682,8 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
         disposeTree(p.mesh);
         return false;
       });
+      trail.forEach((pos) => spark(pos, new THREE.Vector3((Math.random() - 0.5) * 0.3, -0.3, 0), new THREE.Color("#ffe9a8"), 0.3, 0.035));
+      booms.forEach(([pos, color]) => explode(pos, color));
       renderer.render(scene, camera);
     };
     animate();
@@ -576,6 +693,7 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
       ro.disconnect();
       ctx.current?.belt.dispose();
       ctx.current?.zTex.dispose();
+      ctx.current?.starTex.dispose();
       disposeTree(scene);
       renderer.dispose();
       renderer.domElement.remove();
@@ -647,9 +765,9 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
       const z = rowZ[r];
       const inRow = Math.min(cols, n - r * cols); // 最後一排可能不滿，一樣置中
       const x = rowScale[r].toWorld(width / 2 + ((i % cols) - (inRow - 1) / 2) * colPx);
-      const robot = buildRobot(x, z, rowScale[r].colW, c.zTex);
+      const robot = buildRobot(x, z, rowScale[r].colW, c.zTex, c.starTex);
       applyStatus(robot, item, true);
-      if (item.leaving) startBye(robot, item);
+      if (item.leaving) startBye(robot, item, item.leaving);
       if (!known.has(item.key)) {
         robot.pop = firstLayout ? -i * 0.15 : 0; // 第一次進場一隻接一隻跳出來
         if (!firstLayout && item.kind === "position") burst(robot); // 新開倉，放彩帶
@@ -671,7 +789,7 @@ export function TradeArena3D({ items }: { items: ArenaItem[] }) {
     positions.forEach((item) => {
       const r = c.robots.get(item.key);
       if (!r) return;
-      if (item.leaving) { startBye(r, item); return; }
+      if (item.leaving) { startBye(r, item, item.leaving); return; }
       if (applyStatus(r, item, false)) burst(r);
       if (item.kind === "idle") return; // 待機的沒有即時報價
       const prev = lastMark.current[item.key];

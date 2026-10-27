@@ -383,6 +383,8 @@ tr.detail-row > td { padding-top: 0; font-size: 12px; white-space: normal; }
 .station-card.idle { border-top-color: #3d5a7a; border-style: dashed; border-top-style: solid; color: var(--text-2); }
 /* 平倉告別：卡片停在原位，跟機器人揮手的時間一起淡出（不移動） */
 .station-card.leaving { pointer-events: none; border-top-color: #ffd84d; animation: card-bye 2.4s forwards; }
+.station-card.leaving.stop { border-top-color: #ff3d6e; }
+.station-card.leaving.tp { border-top-color: #2bff88; }
 @keyframes card-bye { 0%, 60% { opacity: 1; } 90%, 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .station-card.leaving { animation: none; opacity: .5; } }
 .sc-wait { font: 600 14px/1.9 ui-monospace, Menlo, monospace; color: var(--text-3); }
