@@ -212,6 +212,7 @@ label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; col
 .chart-box.panes-4 { height: 860px; }
 .chart-legend .ind { display: flex; gap: 10px; flex-basis: 100%; }
 .chart-legend { position: absolute; top: 8px; left: 12px; z-index: 2; font-size: 12px; color: var(--text-2); pointer-events: none; display: flex; gap: 12px; flex-wrap: wrap; }
+.vp-panel { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; background: var(--surface-2); }
 .legend-row { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--text-2); margin-top: 8px; }
 .legend-row span { display: inline-flex; align-items: center; gap: 6px; }
 .swatch-line { width: 16px; height: 0; border-top: 2px dashed currentColor; display: inline-block; }

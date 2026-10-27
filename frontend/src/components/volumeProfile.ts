@@ -1,5 +1,5 @@
 import type {
-  ISeriesPrimitive, ISeriesPrimitiveAxisView, ISeriesPrimitivePaneRenderer, ISeriesPrimitivePaneView,
+  ISeriesPrimitive, ISeriesPrimitiveAxisView, Logical, ISeriesPrimitivePaneRenderer, ISeriesPrimitivePaneView,
   SeriesAttachedParameter, Time,
 } from "lightweight-charts";
 import type { CanvasRenderingTarget2D } from "fancy-canvas";
@@ -81,7 +81,9 @@ export interface VolumeProfileStyle {
   outside: string;
   poc: string;
   va: string;
-  /** 直方圖最長那條佔圖寬的比例 */
+  /** 固定區間的底色 */
+  rangeFill: string;
+  /** 直方圖最長那條佔圖寬（固定區間時是區間寬）的比例 */
   widthRatio: number;
   showVahVal: boolean;
 }
@@ -90,16 +92,33 @@ class Renderer implements ISeriesPrimitivePaneRenderer {
   constructor(private src: VolumeProfilePrimitive) {}
 
   draw(target: CanvasRenderingTarget2D) {
-    const { profile: p, series, style: s } = this.src;
-    if (!p || !series) return;
+    const { profile: p, series, chart, span, style: s } = this.src;
+    if (!p || !series || !chart) return;
     target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr }) => {
       const y = (price: number) => {
         const c = series.priceToCoordinate(price);
         return c === null ? null : c * vr;
       };
+      // 可見範圍：貼著價格軸往左長、線畫滿整張圖；固定區間：從區間左緣往右長、線只畫在區間內
+      let x0 = 0, x1 = bitmapSize.width;
+      if (span) {
+        const ts = chart.timeScale();
+        const a = ts.logicalToCoordinate((span.from - 0.5) as Logical);
+        const b = ts.logicalToCoordinate((span.to + 0.5) as Logical);
+        if (a === null || b === null) return;
+        x0 = a * hr;
+        x1 = b * hr;
+        if (x1 < 0 || x0 > bitmapSize.width) return;
+        const top = y(p.bins[p.bins.length - 1]);
+        const bottom = y(p.bins[0]);
+        if (top !== null && bottom !== null) {
+          ctx.fillStyle = s.rangeFill;
+          ctx.fillRect(x0, top, x1 - x0, bottom - top);
+        }
+      }
       const max = Math.max(...p.volumes);
-      const full = bitmapSize.width * s.widthRatio;
-      const right = bitmapSize.width;
+      const full = (x1 - x0) * s.widthRatio;
+      const barX = (w: number) => (span ? x0 : x1 - w);
       for (let i = 0; i < p.volumes.length; i++) {
         const top = y(p.bins[i + 1]);
         const bottom = y(p.bins[i]);
@@ -108,7 +127,7 @@ class Renderer implements ISeriesPrimitivePaneRenderer {
         const h = Math.max(1, bottom - top - gap);
         const w = (p.volumes[i] / max) * full;
         ctx.fillStyle = i >= p.vaLow && i <= p.vaHigh ? s.inside : s.outside;
-        ctx.fillRect(right - w, top, w, h);
+        ctx.fillRect(barX(w), top, w, h);
       }
       const hline = (price: number, color: string, dash: number[], width: number) => {
         const yy = y(price);
@@ -118,8 +137,8 @@ class Renderer implements ISeriesPrimitivePaneRenderer {
         ctx.lineWidth = Math.max(1, Math.round(width * vr));
         ctx.setLineDash(dash.map((d) => d * hr));
         ctx.beginPath();
-        ctx.moveTo(0, Math.round(yy) + 0.5);
-        ctx.lineTo(bitmapSize.width, Math.round(yy) + 0.5);
+        ctx.moveTo(x0, Math.round(yy) + 0.5);
+        ctx.lineTo(x1, Math.round(yy) + 0.5);
         ctx.stroke();
         ctx.restore();
       };
@@ -173,6 +192,9 @@ class AxisLabel implements ISeriesPrimitiveAxisView {
 export class VolumeProfilePrimitive implements ISeriesPrimitive<Time> {
   profile: VolumeProfile | null = null;
   series: SeriesAttachedParameter<Time>["series"] | null = null;
+  chart: SeriesAttachedParameter<Time>["chart"] | null = null;
+  /** 固定區間的 K 棒索引（含兩端）；null 表示統計可見範圍 */
+  span: { from: number; to: number } | null = null;
   private requestUpdate: (() => void) | null = null;
   private views = [new PaneView(this)];
   private labels = [new AxisLabel(this, "poc"), new AxisLabel(this, "vah"), new AxisLabel(this, "val")];
@@ -181,14 +203,17 @@ export class VolumeProfilePrimitive implements ISeriesPrimitive<Time> {
 
   attached(param: SeriesAttachedParameter<Time>) {
     this.series = param.series;
+    this.chart = param.chart;
     this.requestUpdate = param.requestUpdate;
   }
   detached() {
     this.series = null;
+    this.chart = null;
     this.requestUpdate = null;
   }
-  setProfile(p: VolumeProfile | null) {
+  setProfile(p: VolumeProfile | null, span: { from: number; to: number } | null = null) {
     this.profile = p;
+    this.span = span;
     this.requestUpdate?.();
   }
   paneViews() {

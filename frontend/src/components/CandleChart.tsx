@@ -9,6 +9,7 @@ import { fmtPrice, fmtSigned, INTENT_ZH } from "../format";
 import { baseOptions, useChartColors } from "./chartTheme";
 import { alpha, INDICATORS, type IndicatorDef } from "./indicators";
 import { calcVolumeProfile, VolumeProfilePrimitive, type VolumeProfile } from "./volumeProfile";
+import { loadVpSettings, saveVpSettings, VolumeProfilePanel, type VpSettings } from "./VolumeProfilePanel";
 
 export const INTERVAL_SECONDS: Record<string, number> = {
   "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400,
@@ -36,9 +37,8 @@ const loadEnabled = (): string[] => {
 /** 副圖每格佔整張圖的高度比例（圖表高度會跟著副圖數量加高，見 styles.css 的 .panes-N） */
 const PANE_H = [0, 0.17, 0.15, 0.135, 0.12];
 
-/** 成交量分佈圖的價格分桶數與價值區間比例 */
-const VP_ROWS = 60;
-const VP_VALUE_AREA = 0.7;
+const fmtBarTime = (sec: number) =>
+  new Date(sec * 1000).toLocaleString("zh-TW", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
 const fmtVal = (v: number) => `${v < 0 ? "−" : ""}${fmtPrice(Math.abs(v))}`;
 const fmtVol = (v: number) => new Intl.NumberFormat("zh-TW", { notation: "compact", maximumFractionDigits: 2 }).format(v);
@@ -78,8 +78,26 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
   const [legend, setLegend] = useState<LegendItem[]>([]);
   const [indLast, setIndLast] = useState<Record<string, number>>({});
   const [indHover, setIndHover] = useState<Record<string, number> | null>(null);
+  // 成交量分佈圖
   const [vp, setVp] = useState<VolumeProfile | null>(null);
+  const [vpStatus, setVpStatus] = useState<"ok" | "no-range" | "out-of-range">("ok");
   const vpRef = useRef<VolumeProfilePrimitive | null>(null);
+  const [vpSet, setVpSetState] = useState<VpSettings>(loadVpSettings);
+  const setVpSet = (v: VpSettings) => {
+    setVpSetState(v);
+    saveVpSettings(v);
+  };
+  const [vpPanel, setVpPanel] = useState(false);
+  /** 正在圖上選取固定區間：from 為 null 表示等起點，否則等終點 */
+  const [pick, setPick] = useState<{ from: number | null } | null>(null);
+  const pickRef = useRef(pick);
+  pickRef.current = pick;
+  const vpSetRef = useRef(vpSet);
+  vpSetRef.current = vpSet;
+  const pickHover = useRef<number | null>(null);
+  const secRef = useRef(sec);
+  secRef.current = sec;
+  const refreshProfileRef = useRef<() => void>(() => {});
   const subCount = INDICATORS.filter((d) => d.pane === "sub" && enabled.includes(d.id)).length;
 
   const klines = useQuery({
@@ -119,6 +137,10 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
     chart.subscribeCrosshairMove((p) => {
       const d = p.seriesData.get(series) as Candle | undefined;
       setHover(d ? { ...d, time: p.time as number } : null);
+      if (pickRef.current?.from != null && p.time !== undefined) {
+        pickHover.current = p.time as number;
+        refreshProfileRef.current();
+      }
       if (!d) return setIndHover(null);
       const vals: Record<string, number> = {};
       for (const ind of indRef.current) {
@@ -138,14 +160,26 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
     };
   }, [colors]);
 
-  // 點擊 K 棒 → 列出該根 K 棒內的成交
+  // 點擊 K 棒 → 選取固定區間的起點／終點，或列出該根 K 棒內的成交
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chart || !onSelectBar) return;
+    if (!chart) return;
     const handler = (p: { time?: Time }) => {
       if (p.time === undefined) return;
       const t = p.time as number;
-      onSelectBar((trades.data ?? []).filter((x) => barTime(x.executed_at, sec) === t));
+      const pk = pickRef.current;
+      if (pk) {
+        if (pk.from === null) {
+          pickHover.current = t;
+          setPick({ from: t });
+          return;
+        }
+        const a = Math.min(pk.from, t), b = Math.max(pk.from, t);
+        setPick(null);
+        setVpSet({ ...vpSetRef.current, mode: "fixed", range: { from: a, to: b + sec } });
+        return;
+      }
+      onSelectBar?.((trades.data ?? []).filter((x) => barTime(x.executed_at, sec) === t));
     };
     chart.subscribeClick(handler);
     return () => chart.unsubscribeClick(handler);
@@ -209,26 +243,49 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
     setIndLast(last);
   }, [enabled, colors, klines.data]);
 
-  // 成交量分佈圖：統計畫面上看得到的 K 棒，平移縮放時重算
+  // 成交量分佈圖：可見範圍模式統計畫面上的 K 棒（平移縮放時重算）；固定區間模式統計選取的時間區間
   const refreshProfile = () => {
     const prim = vpRef.current;
-    const range = chartRef.current?.timeScale().getVisibleLogicalRange();
-    if (!prim || !range) return;
+    if (!prim) return;
+    const cfg = vpSetRef.current;
     const candles = candlesRef.current;
-    const from = Math.max(0, Math.ceil(range.from));
-    const to = Math.min(candles.length - 1, Math.floor(range.to));
-    const p = to >= from ? calcVolumeProfile(candles.slice(from, to + 1), VP_ROWS, VP_VALUE_AREA) : null;
-    prim.setProfile(p);
+    let from: number, to: number;
+    if (cfg.mode === "visible") {
+      const range = chartRef.current?.timeScale().getVisibleLogicalRange();
+      if (!range) return;
+      from = Math.max(0, Math.ceil(range.from));
+      to = Math.min(candles.length - 1, Math.floor(range.to));
+    } else {
+      const pk = pickRef.current;
+      const sel = pk?.from != null && pickHover.current !== null
+        ? { from: Math.min(pk.from, pickHover.current), to: Math.max(pk.from, pickHover.current) + secRef.current }
+        : cfg.range;
+      if (!sel) {
+        prim.setProfile(null);
+        setVp(null);
+        return setVpStatus("no-range");
+      }
+      // 跟區間有重疊的 K 棒都算（換了週期也能沿用同一段時間）
+      from = candles.findIndex((c) => c.time + secRef.current > sel.from);
+      to = candles.length - 1;
+      while (to >= 0 && candles[to].time >= sel.to) to--;
+      if (from < 0) from = candles.length;
+    }
+    const p = to >= from ? calcVolumeProfile(candles.slice(from, to + 1), cfg.rows, cfg.vaPct) : null;
+    prim.setProfile(p, cfg.mode === "fixed" && p ? { from, to } : null);
     setVp(p);
+    setVpStatus(cfg.mode === "fixed" && !p ? "out-of-range" : "ok");
   };
+  refreshProfileRef.current = refreshProfile;
   const vpOn = enabled.includes("vp");
+  const pocColor = vpSet.pocColor ?? colors.serious;
   useEffect(() => {
     const chart = chartRef.current;
     const main = seriesRef.current;
     if (!chart || !main || !vpOn) return setVp(null);
     const prim = new VolumeProfilePrimitive({
-      inside: alpha(colors.series1, 0.45), outside: alpha(colors.series1, 0.15),
-      poc: colors.serious, va: colors.text2, widthRatio: 0.25, showVahVal: true,
+      inside: alpha(colors.series1, 0.45), outside: alpha(colors.series1, 0.15), rangeFill: alpha(colors.series1, 0.06),
+      poc: pocColor, va: colors.text2, widthRatio: vpSet.widthPct, showVahVal: vpSet.showVahVal,
     }, fmtPrice);
     main.attachPrimitive(prim);
     vpRef.current = prim;
@@ -240,7 +297,19 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
       main.detachPrimitive(prim);
       vpRef.current = null;
     };
-  }, [vpOn, colors, klines.data]);
+  }, [vpOn, colors, klines.data, vpSet]);
+
+  // 開始／結束選取時重畫（結束時回到已存的區間）；選取中按 Esc 取消
+  useEffect(() => {
+    refreshProfileRef.current();
+    if (!pick) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setPick(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pick]);
+  useEffect(() => {
+    if (!vpOn) setPick(null);
+  }, [vpOn]);
 
   // 即時 K 棒進來時，重算指標並只更新最後一點
   const refreshIndicators = () => {
@@ -347,14 +416,30 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
           {INDICATORS.filter((d) => d.pane === "main").map((d) => (
             <button key={d.id} className={enabled.includes(d.id) ? "on" : ""} onClick={() => toggle(d.id)}>{d.label}</button>
           ))}
-          <button className={vpOn ? "on" : ""} onClick={() => toggle("vp")} title="成交量分佈圖（畫面上的 K 棒）">VP</button>
+          <button className={vpOn ? "on" : ""} onClick={() => toggle("vp")} title="成交量分佈圖">VP</button>
         </div>
+        {vpOn && (
+          <>
+            <div className="seg">
+              <button className={vpSet.mode === "visible" ? "on" : ""} onClick={() => { setPick(null); setVpSet({ ...vpSet, mode: "visible" }); }}>可見範圍</button>
+              <button className={vpSet.mode === "fixed" ? "on" : ""} onClick={() => setVpSet({ ...vpSet, mode: "fixed" })}>固定區間</button>
+            </div>
+            {vpSet.mode === "fixed" && (
+              pick
+                ? <button className="btn small" onClick={() => setPick(null)}>取消選取</button>
+                : <button className="btn small" onClick={() => { pickHover.current = null; setPick({ from: null }); }}>{vpSet.range ? "重新選取區間" : "選取區間"}</button>
+            )}
+            <button className={`btn small${vpPanel ? " primary" : ""}`} onClick={() => setVpPanel((v) => !v)}>⚙ VP 參數</button>
+            {pick && <span className="muted" style={{ fontSize: 12 }}>{pick.from === null ? "在圖上點選起點 K 棒" : "點選終點 K 棒"}（Esc 取消）</span>}
+          </>
+        )}
         <div className="seg">
           {INDICATORS.filter((d) => d.pane === "sub").map((d) => (
             <button key={d.id} className={enabled.includes(d.id) ? "on" : ""} onClick={() => toggle(d.id)}>{d.label}</button>
           ))}
         </div>
       </div>
+      {vpOn && vpPanel && <VolumeProfilePanel value={vpSet} onChange={setVpSet} defaultPocColor={colors.serious} />}
       <div className={`chart-box${subCount ? ` panes-${subCount}` : ""}`} ref={box}>
         <div className="chart-legend">
           <strong style={{ color: "var(--text)" }}>{resolved ?? symbol}</strong>
@@ -370,9 +455,12 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
           )}
           {vp && (
             <span className="ind">
-              <span style={{ color: colors.serious }}>POC {fmtPrice(vp.poc)}</span>
-              <span>VAH {fmtPrice(vp.vah)}</span>
-              <span>VAL {fmtPrice(vp.val)}</span>
+              {vpSet.mode === "fixed" && vpSet.range && !pick && (
+                <span>固定區間 {fmtBarTime(vpSet.range.from)} – {fmtBarTime(vpSet.range.to)}</span>
+              )}
+              <span style={{ color: pocColor }}>POC {fmtPrice(vp.poc)}</span>
+              {vpSet.showVahVal && <span>VAH {fmtPrice(vp.vah)}</span>}
+              {vpSet.showVahVal && <span>VAL {fmtPrice(vp.val)}</span>}
             </span>
           )}
           {legend.length > 0 && (
@@ -400,10 +488,12 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
         )}
         {vp && (
           <span>
-            <span style={{ color: colors.serious }}><span className="swatch-line" style={{ borderTopStyle: "solid" }} /> POC</span>
-            {" "}<span className="swatch-line" /> 價值區間 {VP_VALUE_AREA * 100}%（VAH／VAL）
+            <span style={{ color: pocColor }}><span className="swatch-line" style={{ borderTopStyle: "solid" }} /> POC</span>
+            {vpSet.showVahVal && <>{" "}<span className="swatch-line" /> 價值區間 {Math.round(vpSet.vaPct * 100)}%（VAH／VAL）</>}
           </span>
         )}
+        {vpOn && vpStatus === "no-range" && !pick && <span className="muted">VP 固定區間：按「選取區間」，在圖上點起點和終點兩根 K 棒</span>}
+        {vpOn && vpStatus === "out-of-range" && !pick && <span style={{ color: "var(--warn-text)" }}>VP 固定區間不在目前載入的 K 線範圍內，請重新選取</span>}
         <span className="muted">{connected ? "● 即時推送" : "○ 連線中斷，每 5 秒更新"} · 點擊 K 棒查看該時段成交明細</span>
       </div>
     </div>
