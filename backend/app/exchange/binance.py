@@ -2,9 +2,15 @@ import logging
 
 import ccxt.async_support as ccxt
 
-from .base import AssetBalance, ExchangeAdapter, ExchangePosition, OrderResult, Wallet
+from .base import AssetBalance, ExchangeAdapter, ExchangePosition, ExitInfo, OrderResult, Wallet
 
 log = logging.getLogger(__name__)
+
+# Binance 的 allOrders 一次只能查 7 天內
+_MAX_WINDOW_MS = 7 * 24 * 3600 * 1000 - 60_000
+# 條件單（algo order）的種類 → 平倉原因
+_ALGO_REASON = {"STOP_MARKET": "stop", "STOP": "stop", "TRAILING_STOP_MARKET": "stop",
+                "TAKE_PROFIT_MARKET": "take_profit", "TAKE_PROFIT": "take_profit"}
 
 _STATUS = {"closed": "filled", "open": "open", "canceled": "canceled", "expired": "canceled", "rejected": "rejected"}
 
@@ -138,6 +144,37 @@ class BinanceAdapter(ExchangeAdapter):
                 await self.ex.cancel_all_orders(symbol, params)
             except ccxt.BaseError as e:
                 log.info("cancel_all_orders %s %s: %s", symbol, params, e)
+
+
+    async def find_exit(self, symbol, side, since_ms):
+        """找出把部位平掉的那張單：開倉後、反方向、最後一張有成交的單。
+        - 是我們掛的停損停利條件單觸發出來的（條件單的 actualOrderId 指向它）→ stop / take_profit
+        - clientOrderId 是 autoclose-（強平）或 adl_autoclose（自動減倉）→ liquidation
+        - 其他 → external（在交易所上手動平的）"""
+        if self.market != "futures":
+            return None
+        since_ms = max(since_ms, self.ex.milliseconds() - _MAX_WINDOW_MS)
+        close_side = "sell" if side == "long" else "buy"
+        try:
+            orders = await self.ex.fetch_orders(symbol, since_ms, 100)
+            filled = [o for o in orders if o.get("side") == close_side and float(o.get("filled") or 0) > 0]
+            if not filled:
+                return None
+            last = max(filled, key=lambda o: o.get("lastTradeTimestamp") or o.get("timestamp") or 0)
+            price = float(last["average"]) if last.get("average") else None
+            info = last.get("info") or {}
+            client_id = str(last.get("clientOrderId") or info.get("clientOrderId") or "")
+            if client_id.startswith(("autoclose", "adl_autoclose")) or "LIQUIDATION" in (info.get("type"), info.get("origType")):
+                return ExitInfo("liquidation", price)
+            algos = await self.ex.fetch_orders(symbol, since_ms, 100, {"trigger": True})
+            for a in algos:
+                ai = a.get("info") or {}
+                if str(ai.get("actualOrderId") or "") == str(last["id"]):
+                    return ExitInfo(_ALGO_REASON.get(ai.get("orderType"), "external"), price)
+            return ExitInfo("external", price)
+        except ccxt.BaseError as e:
+            log.warning("find_exit %s failed, fall back to price inference: %s", symbol, e)
+            return None
 
 
 def build_binance_exchanges(api_key: str, secret: str, demo: bool) -> tuple[ccxt.Exchange, ccxt.Exchange]:

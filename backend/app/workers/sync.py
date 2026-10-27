@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from sqlalchemy import delete, select
 
@@ -138,7 +138,7 @@ class SyncWorkers:
                     for p in ledger:
                         r = by_symbol.get(p.symbol)
                         if r is None:
-                            await self._external_close(s, p, prices.get(p.symbol, p.mark_price or p.entry_price))
+                            await self._external_close(s, adapter, p, prices.get(p.symbol, p.mark_price or p.entry_price))
                         else:
                             p.mark_price = r.mark_price or prices.get(p.symbol)
                             p.unrealized_pnl = r.unrealized_pnl
@@ -161,8 +161,12 @@ class SyncWorkers:
         if changed:
             await self.bus.emit("position_update", None)
 
-    async def _external_close(self, s, p: Position, price: float):
-        """交易所上的部位不見了（原生停損/停利、強平、或在交易所手動平倉）。"""
+    async def _external_close(self, s, adapter, p: Position, mark: float):
+        """交易所上的部位不見了（原生停損/停利、強平、或在交易所手動平倉）。
+        先查交易所的訂單紀錄找出是哪張單平掉的（原因和實際成交價）；查不到才用標記價格研判。"""
+        opened = p.opened_at if p.opened_at.tzinfo else p.opened_at.replace(tzinfo=timezone.utc)
+        found = await adapter.find_exit(p.symbol, p.side, int(opened.timestamp() * 1000))
+        price = found.price if found and found.price else mark
         _, realized = apply_fill(
             LedgerState(p.side, p.qty, p.entry_price), "sell" if p.side == "long" else "buy", p.qty, price
         )
@@ -173,12 +177,19 @@ class SyncWorkers:
         p.realized_pnl += realized
         p.unrealized_pnl = 0
         p.closed_at = utcnow()
-        p.exit_reason = external_exit_reason(p.side, price, p.stop_price, p.take_profit_price, p.liquidation_price)
+        if found:
+            p.exit_reason = found.reason
+            why = {"stop": "停損單成交", "take_profit": "停利單成交", "liquidation": "強平",
+                   "external": "在交易所手動平倉"}.get(found.reason, found.reason)
+        else:
+            p.exit_reason = external_exit_reason(p.side, price, p.stop_price, p.take_profit_price, p.liquidation_price)
+            why = {"stop": "研判為停損", "take_profit": "研判為停利", "liquidation": "研判為強平"}.get(
+                p.exit_reason, "停損/停利/強平/手動")
         await s.flush()
-        why = {"stop": "研判為停損", "take_profit": "研判為停利", "liquidation": "研判為強平"}.get(p.exit_reason, "停損/停利/強平/手動")
+        how = f"成交均價 {price}" if found and found.price else f"以標記價格 {price} 估算"
         await self.bus.emit(
             "trade", None, level="warn", category="trade", notify=True,
-            message=f"{p.symbol} 部位已在交易所被平倉（{why}），以標記價格 {price} 估算損益 {realized:+.4f}",
+            message=f"{p.symbol} 部位已在交易所被平倉（{why}），{how}，損益 {realized:+.4f}",
         )
 
     # ------------------------------------------------------------ 訂單

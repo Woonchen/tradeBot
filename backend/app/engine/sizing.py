@@ -24,7 +24,8 @@ def protection_prices(side: str, entry: float, stop_pct: float, tp_pct: float) -
 
 
 # 平倉原因：stop / take_profit = 停損停利（軟體監控或交易所的原生單）；signal = 策略或 TradingView 的訊號；
-# manual = 手動平倉；risk = 回撤熔斷全部平倉；liquidation = 強平；external = 在交易所被平掉、看不出原因
+# manual = 手動平倉；risk = 回撤熔斷全部平倉；liquidation = 強平（含自動減倉）；
+# external = 在交易所上手動平倉（訂單紀錄查得到），或查不到紀錄、價格也看不出原因
 EXIT_REASONS = ("stop", "take_profit", "signal", "manual", "risk", "liquidation", "external")
 
 

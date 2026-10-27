@@ -48,6 +48,13 @@ class ExchangePosition:
     liquidation_price: float | None
 
 
+@dataclass
+class ExitInfo:
+    """部位在交易所被平掉時，從訂單紀錄查到的平倉原因（見 engine/sizing.py 的 EXIT_REASONS）與實際成交均價。"""
+    reason: str
+    price: float | None
+
+
 def normalize_ticker(raw: str) -> str:
     """TradingView ticker → Binance market id。
 
@@ -166,6 +173,10 @@ class ExchangeAdapter(ABC):
 
     async def cancel_protection(self, symbol: str):
         pass
+
+    async def find_exit(self, symbol: str, side: str, since_ms: int) -> ExitInfo | None:
+        """部位在交易所上不見了：查訂單紀錄是哪一張單把它平掉的。None = 查不到（呼叫端改用價格研判）。"""
+        return None
 
     async def close(self):
         await self.ex.close()

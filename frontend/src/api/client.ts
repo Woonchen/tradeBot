@@ -12,7 +12,7 @@ export interface Trade {
   id: number; order_id: number | null; signal_id: number | null; symbol: string; market: Market; side: "buy" | "sell";
   intent: string; price: number; qty: number; fee_usdt: number; realized_pnl: number; executed_at: string;
 }
-/** stop / take_profit：停損停利；signal：策略或 TradingView 訊號；risk：回撤熔斷；external：在交易所被平掉、看不出原因 */
+/** stop / take_profit：停損停利；signal：策略或 TradingView 訊號；risk：回撤熔斷；external：在交易所上手動平倉，或查不到原因 */
 export type ExitReason = "stop" | "take_profit" | "signal" | "manual" | "risk" | "liquidation" | "external";
 export interface Position {
   id: number; symbol: string; market: Market; side: "long" | "short"; qty: number; entry_price: number;
