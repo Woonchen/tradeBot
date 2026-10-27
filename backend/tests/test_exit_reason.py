@@ -174,9 +174,15 @@ async def test_external_close_prefers_exchange_record(env):  # noqa: F811
         assert side == "long" and since_ms > 0
         return ExitInfo("take_profit", 110.2)
     ad["futures"].find_exit = find_exit
+    canceled = []
+
+    async def cancel_protection(symbol):
+        canceled.append(symbol)
+    ad["futures"].cancel_protection = cancel_protection
     hub = SimpleNamespace(fresh_price=lambda m, s: None, on_price=lambda *a: None)
     await SyncWorkers(ex, hub).sync_positions()
     assert await closed_reasons(sf) == ["take_profit"]
+    assert canceled == ["BTC/USDT:USDT"]  # 沒觸發的另一張保護單要撤掉
     async with sf() as s:
         trade = (await s.scalars(select(Trade).order_by(Trade.id.desc()))).first()
         assert trade.price == 110.2 and trade.realized_pnl == pytest.approx(2 * 10.2)

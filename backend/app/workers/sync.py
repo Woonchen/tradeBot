@@ -166,6 +166,8 @@ class SyncWorkers:
         先查交易所的訂單紀錄找出是哪張單平掉的（原因和實際成交價）；查不到才用標記價格研判。"""
         opened = p.opened_at if p.opened_at.tzinfo else p.opened_at.replace(tzinfo=timezone.utc)
         found = await adapter.find_exit(p.symbol, p.side, int(opened.timestamp() * 1000))
+        # 停損觸發後另一張停利單（或反過來）Binance 不會自動撤掉，留著會在下次同幣開倉時把新部位平掉
+        await adapter.cancel_protection(p.symbol)
         price = found.price if found and found.price else mark
         _, realized = apply_fill(
             LedgerState(p.side, p.qty, p.entry_price), "sell" if p.side == "long" else "buy", p.qty, price
