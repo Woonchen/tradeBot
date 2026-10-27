@@ -81,73 +81,77 @@ export interface VolumeProfileStyle {
   outside: string;
   poc: string;
   va: string;
-  /** 固定區間的底色 */
+  /** 固定區間／交易時段的底色 */
   rangeFill: string;
-  /** 直方圖最長那條佔圖寬（固定區間時是區間寬）的比例 */
+  /** 直方圖最長那條佔圖寬（固定區間、交易時段時是區間寬）的比例 */
   widthRatio: number;
   showVahVal: boolean;
 }
+
+type Scope = Parameters<Parameters<CanvasRenderingTarget2D["useBitmapCoordinateSpace"]>[0]>[0];
 
 class Renderer implements ISeriesPrimitivePaneRenderer {
   constructor(private src: VolumeProfilePrimitive) {}
 
   draw(target: CanvasRenderingTarget2D) {
-    const { profile: p, series, chart, span, style: s } = this.src;
-    if (!p || !series || !chart) return;
-    target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr }) => {
-      const y = (price: number) => {
-        const c = series.priceToCoordinate(price);
-        return c === null ? null : c * vr;
-      };
-      // 可見範圍：貼著價格軸往左長、線畫滿整張圖；固定區間：從區間左緣往右長、線只畫在區間內
-      let x0 = 0, x1 = bitmapSize.width;
-      if (span) {
-        const ts = chart.timeScale();
-        const a = ts.logicalToCoordinate((span.from - 0.5) as Logical);
-        const b = ts.logicalToCoordinate((span.to + 0.5) as Logical);
-        if (a === null || b === null) return;
-        x0 = a * hr;
-        x1 = b * hr;
-        if (x1 < 0 || x0 > bitmapSize.width) return;
-        const top = y(p.bins[p.bins.length - 1]);
-        const bottom = y(p.bins[0]);
-        if (top !== null && bottom !== null) {
-          ctx.fillStyle = s.rangeFill;
-          ctx.fillRect(x0, top, x1 - x0, bottom - top);
-        }
-      }
-      const max = Math.max(...p.volumes);
-      const full = (x1 - x0) * s.widthRatio;
-      const barX = (w: number) => (span ? x0 : x1 - w);
-      for (let i = 0; i < p.volumes.length; i++) {
-        const top = y(p.bins[i + 1]);
-        const bottom = y(p.bins[i]);
-        if (top === null || bottom === null || p.volumes[i] <= 0) continue;
-        const gap = Math.max(1, Math.round(vr)); // 桶之間留 1px 縫
-        const h = Math.max(1, bottom - top - gap);
-        const w = (p.volumes[i] / max) * full;
-        ctx.fillStyle = i >= p.vaLow && i <= p.vaHigh ? s.inside : s.outside;
-        ctx.fillRect(barX(w), top, w, h);
-      }
-      const hline = (price: number, color: string, dash: number[], width: number) => {
-        const yy = y(price);
-        if (yy === null) return;
-        ctx.save();
-        ctx.strokeStyle = color;
-        ctx.lineWidth = Math.max(1, Math.round(width * vr));
-        ctx.setLineDash(dash.map((d) => d * hr));
-        ctx.beginPath();
-        ctx.moveTo(x0, Math.round(yy) + 0.5);
-        ctx.lineTo(x1, Math.round(yy) + 0.5);
-        ctx.stroke();
-        ctx.restore();
-      };
-      if (s.showVahVal) {
-        hline(p.vah, s.va, [4, 4], 1);
-        hline(p.val, s.va, [4, 4], 1);
-      }
-      hline(p.poc, s.poc, [], 1.5);
+    if (!this.src.items.length || !this.src.series || !this.src.chart) return;
+    target.useBitmapCoordinateSpace((scope) => {
+      for (const it of this.src.items) this.drawOne(scope, it);
     });
+  }
+
+  /** 可見範圍：貼著價格軸往左長、線畫滿整張圖；固定區間／交易時段：從區間左緣往右長、線只畫在區間內 */
+  private drawOne({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr }: Scope, { profile: p, span }: ProfileItem) {
+    const { series, chart, style: s } = this.src;
+    const y = (price: number) => {
+      const c = series!.priceToCoordinate(price);
+      return c === null ? null : c * vr;
+    };
+    let x0 = 0, x1 = bitmapSize.width;
+    if (span) {
+      const ts = chart!.timeScale();
+      const a = ts.logicalToCoordinate((span.from - 0.5) as Logical);
+      const b = ts.logicalToCoordinate((span.to + 0.5) as Logical);
+      if (a === null || b === null) return;
+      x0 = a * hr;
+      x1 = b * hr;
+      if (x1 < 0 || x0 > bitmapSize.width) return;
+      const top = y(p.bins[p.bins.length - 1]);
+      const bottom = y(p.bins[0]);
+      if (top !== null && bottom !== null) {
+        ctx.fillStyle = s.rangeFill;
+        ctx.fillRect(x0, top, x1 - x0, bottom - top);
+      }
+    }
+    const max = Math.max(...p.volumes);
+    const full = (x1 - x0) * s.widthRatio;
+    const gap = Math.max(1, Math.round(vr)); // 桶之間留 1px 縫
+    for (let i = 0; i < p.volumes.length; i++) {
+      const top = y(p.bins[i + 1]);
+      const bottom = y(p.bins[i]);
+      if (top === null || bottom === null || p.volumes[i] <= 0) continue;
+      const w = (p.volumes[i] / max) * full;
+      ctx.fillStyle = i >= p.vaLow && i <= p.vaHigh ? s.inside : s.outside;
+      ctx.fillRect(span ? x0 : x1 - w, top, w, Math.max(1, bottom - top - gap));
+    }
+    const hline = (price: number, color: string, dash: number[], width: number) => {
+      const yy = y(price);
+      if (yy === null) return;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(1, Math.round(width * vr));
+      ctx.setLineDash(dash.map((d) => d * hr));
+      ctx.beginPath();
+      ctx.moveTo(x0, Math.round(yy) + 0.5);
+      ctx.lineTo(x1, Math.round(yy) + 0.5);
+      ctx.stroke();
+      ctx.restore();
+    };
+    if (s.showVahVal) {
+      hline(p.vah, s.va, [4, 4], 1);
+      hline(p.val, s.va, [4, 4], 1);
+    }
+    hline(p.poc, s.poc, [], 1.5);
   }
 }
 
@@ -167,7 +171,7 @@ class PaneView implements ISeriesPrimitivePaneView {
 class AxisLabel implements ISeriesPrimitiveAxisView {
   constructor(private src: VolumeProfilePrimitive, private which: "poc" | "vah" | "val") {}
   private price() {
-    return this.src.profile?.[this.which] ?? null;
+    return this.src.items.at(-1)?.profile[this.which] ?? null;
   }
   visible() {
     return this.price() !== null && (this.which === "poc" || this.src.style.showVahVal);
@@ -188,13 +192,17 @@ class AxisLabel implements ISeriesPrimitiveAxisView {
   }
 }
 
-/** 掛在 K 線 series 上的直方圖：從價格軸往左長，跟著平移縮放重畫。 */
+export interface ProfileItem {
+  profile: VolumeProfile;
+  /** 區間的 K 棒索引（含兩端）；null 表示統計可見範圍、貼著價格軸畫 */
+  span: { from: number; to: number } | null;
+}
+
+/** 掛在 K 線 series 上的直方圖，跟著平移縮放重畫；價格軸標籤標的是最後一個區間。 */
 export class VolumeProfilePrimitive implements ISeriesPrimitive<Time> {
-  profile: VolumeProfile | null = null;
+  items: ProfileItem[] = [];
   series: SeriesAttachedParameter<Time>["series"] | null = null;
   chart: SeriesAttachedParameter<Time>["chart"] | null = null;
-  /** 固定區間的 K 棒索引（含兩端）；null 表示統計可見範圍 */
-  span: { from: number; to: number } | null = null;
   private requestUpdate: (() => void) | null = null;
   private views = [new PaneView(this)];
   private labels = [new AxisLabel(this, "poc"), new AxisLabel(this, "vah"), new AxisLabel(this, "val")];
@@ -211,9 +219,8 @@ export class VolumeProfilePrimitive implements ISeriesPrimitive<Time> {
     this.chart = null;
     this.requestUpdate = null;
   }
-  setProfile(p: VolumeProfile | null, span: { from: number; to: number } | null = null) {
-    this.profile = p;
-    this.span = span;
+  setItems(items: ProfileItem[]) {
+    this.items = items;
     this.requestUpdate?.();
   }
   paneViews() {

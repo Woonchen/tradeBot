@@ -8,8 +8,10 @@ import { live, useLiveConnected } from "../api/liveSocket";
 import { fmtPrice, fmtSigned, INTENT_ZH } from "../format";
 import { baseOptions, useChartColors } from "./chartTheme";
 import { alpha, INDICATORS, type IndicatorDef } from "./indicators";
-import { calcVolumeProfile, VolumeProfilePrimitive, type VolumeProfile } from "./volumeProfile";
-import { loadVpSettings, saveVpSettings, VolumeProfilePanel, type VpSettings } from "./VolumeProfilePanel";
+import { calcVolumeProfile, VolumeProfilePrimitive, type ProfileItem, type VolumeProfile } from "./volumeProfile";
+import {
+  loadVpSettings, saveVpSettings, sessionSeconds, sessionStart, VolumeProfilePanel, type VpSettings,
+} from "./VolumeProfilePanel";
 
 export const INTERVAL_SECONDS: Record<string, number> = {
   "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400,
@@ -80,7 +82,9 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
   const [indHover, setIndHover] = useState<Record<string, number> | null>(null);
   // 成交量分佈圖
   const [vp, setVp] = useState<VolumeProfile | null>(null);
-  const [vpStatus, setVpStatus] = useState<"ok" | "no-range" | "out-of-range">("ok");
+  const [vpStatus, setVpStatus] = useState<"ok" | "no-range" | "out-of-range" | "interval-too-big">("ok");
+  /** 交易時段模式下每個時段的分佈，圖例顯示游標所在（沒有就最後一個）時段的值 */
+  const [vpSessions, setVpSessions] = useState<{ start: number; profile: VolumeProfile }[]>([]);
   const vpRef = useRef<VolumeProfilePrimitive | null>(null);
   const [vpSet, setVpSetState] = useState<VpSettings>(loadVpSettings);
   const setVpSet = (v: VpSettings) => {
@@ -243,12 +247,38 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
     setIndLast(last);
   }, [enabled, colors, klines.data]);
 
-  // 成交量分佈圖：可見範圍模式統計畫面上的 K 棒（平移縮放時重算）；固定區間模式統計選取的時間區間
+  // 成交量分佈圖：可見範圍模式統計畫面上的 K 棒（平移縮放時重算）；固定區間模式統計選取的時間區間；
+  // 交易時段模式把 K 棒按時段分組，每段各畫一個
   const refreshProfile = () => {
     const prim = vpRef.current;
     if (!prim) return;
     const cfg = vpSetRef.current;
     const candles = candlesRef.current;
+    if (cfg.mode === "session") {
+      setVp(null);
+      if (secRef.current >= sessionSeconds(cfg)) {
+        prim.setItems([]);
+        setVpSessions([]);
+        return setVpStatus("interval-too-big");
+      }
+      const sessions: { start: number; profile: VolumeProfile }[] = [];
+      const items: ProfileItem[] = [];
+      for (let i = 0; i < candles.length;) {
+        const start = sessionStart(candles[i].time, cfg);
+        let j = i;
+        while (j + 1 < candles.length && sessionStart(candles[j + 1].time, cfg) === start) j++;
+        const p = calcVolumeProfile(candles.slice(i, j + 1), cfg.rows, cfg.vaPct);
+        if (p) {
+          sessions.push({ start, profile: p });
+          items.push({ profile: p, span: { from: i, to: j } });
+        }
+        i = j + 1;
+      }
+      prim.setItems(items);
+      setVpSessions(sessions);
+      return setVpStatus("ok");
+    }
+    setVpSessions([]);
     let from: number, to: number;
     if (cfg.mode === "visible") {
       const range = chartRef.current?.timeScale().getVisibleLogicalRange();
@@ -261,7 +291,7 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
         ? { from: Math.min(pk.from, pickHover.current), to: Math.max(pk.from, pickHover.current) + secRef.current }
         : cfg.range;
       if (!sel) {
-        prim.setProfile(null);
+        prim.setItems([]);
         setVp(null);
         return setVpStatus("no-range");
       }
@@ -272,7 +302,7 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
       if (from < 0) from = candles.length;
     }
     const p = to >= from ? calcVolumeProfile(candles.slice(from, to + 1), cfg.rows, cfg.vaPct) : null;
-    prim.setProfile(p, cfg.mode === "fixed" && p ? { from, to } : null);
+    prim.setItems(p ? [{ profile: p, span: cfg.mode === "fixed" ? { from, to } : null }] : []);
     setVp(p);
     setVpStatus(cfg.mode === "fixed" && !p ? "out-of-range" : "ok");
   };
@@ -291,9 +321,10 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
     vpRef.current = prim;
     refreshProfile();
     const ts = chart.timeScale();
-    ts.subscribeVisibleLogicalRangeChange(refreshProfile);
+    const onRange = () => vpSetRef.current.mode === "visible" && refreshProfile();
+    ts.subscribeVisibleLogicalRangeChange(onRange);
     return () => {
-      ts.unsubscribeVisibleLogicalRangeChange(refreshProfile);
+      ts.unsubscribeVisibleLogicalRangeChange(onRange);
       main.detachPrimitive(prim);
       vpRef.current = null;
     };
@@ -405,6 +436,10 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
   }, [position, colors, klines.data]);
 
   const last = hover ?? tick ?? klines.data?.candles.at(-1) ?? null;
+  const shownSession = vpSet.mode === "session"
+    ? (hover && vpSessions.find((x) => hover.time >= x.start && hover.time < x.start + sessionSeconds(vpSet))) || vpSessions.at(-1) || null
+    : null;
+  const vpShown = vpSet.mode === "session" ? shownSession?.profile ?? null : vp;
   const change = last ? (last.close - last.open) / last.open : 0;
   const indVals = indHover ?? indLast;
 
@@ -423,6 +458,7 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
             <div className="seg">
               <button className={vpSet.mode === "visible" ? "on" : ""} onClick={() => { setPick(null); setVpSet({ ...vpSet, mode: "visible" }); }}>可見範圍</button>
               <button className={vpSet.mode === "fixed" ? "on" : ""} onClick={() => setVpSet({ ...vpSet, mode: "fixed" })}>固定區間</button>
+              <button className={vpSet.mode === "session" ? "on" : ""} onClick={() => { setPick(null); setVpSet({ ...vpSet, mode: "session" }); }}>交易時段</button>
             </div>
             {vpSet.mode === "fixed" && (
               pick
@@ -453,14 +489,17 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
               <span className={change >= 0 ? "up" : "down"}>{fmtSigned(change * 100)}%</span>
             </>
           )}
-          {vp && (
+          {vpShown && (
             <span className="ind">
               {vpSet.mode === "fixed" && vpSet.range && !pick && (
                 <span>固定區間 {fmtBarTime(vpSet.range.from)} – {fmtBarTime(vpSet.range.to)}</span>
               )}
-              <span style={{ color: pocColor }}>POC {fmtPrice(vp.poc)}</span>
-              {vpSet.showVahVal && <span>VAH {fmtPrice(vp.vah)}</span>}
-              {vpSet.showVahVal && <span>VAL {fmtPrice(vp.val)}</span>}
+              {shownSession && (
+                <span>時段 {fmtBarTime(shownSession.start)} – {fmtBarTime(shownSession.start + sessionSeconds(vpSet))}</span>
+              )}
+              <span style={{ color: pocColor }}>POC {fmtPrice(vpShown.poc)}</span>
+              {vpSet.showVahVal && <span>VAH {fmtPrice(vpShown.vah)}</span>}
+              {vpSet.showVahVal && <span>VAL {fmtPrice(vpShown.val)}</span>}
             </span>
           )}
           {legend.length > 0 && (
@@ -486,13 +525,14 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
             {position.liquidation_price && <span style={{ color: colors.warn }}><span className="swatch-line" style={{ borderTopStyle: "dotted" }} /> 強平</span>}
           </>
         )}
-        {vp && (
+        {vpShown && (
           <span>
             <span style={{ color: pocColor }}><span className="swatch-line" style={{ borderTopStyle: "solid" }} /> POC</span>
             {vpSet.showVahVal && <>{" "}<span className="swatch-line" /> 價值區間 {Math.round(vpSet.vaPct * 100)}%（VAH／VAL）</>}
           </span>
         )}
         {vpOn && vpStatus === "no-range" && !pick && <span className="muted">VP 固定區間：按「選取區間」，在圖上點起點和終點兩根 K 棒</span>}
+        {vpOn && vpStatus === "interval-too-big" && <span style={{ color: "var(--warn-text)" }}>VP 交易時段：K 線週期要比時段（{vpSet.sessionLen === "week" ? "週" : "日"}）短，請改用較小的週期</span>}
         {vpOn && vpStatus === "out-of-range" && !pick && <span style={{ color: "var(--warn-text)" }}>VP 固定區間不在目前載入的 K 線範圍內，請重新選取</span>}
         <span className="muted">{connected ? "● 即時推送" : "○ 連線中斷，每 5 秒更新"} · 點擊 K 棒查看該時段成交明細</span>
       </div>
