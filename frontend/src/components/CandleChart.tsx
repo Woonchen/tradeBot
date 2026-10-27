@@ -7,7 +7,8 @@ import { api, qs, type Candle, type Market, type Position, type Trade } from "..
 import { live, useLiveConnected } from "../api/liveSocket";
 import { fmtPrice, fmtSigned, INTENT_ZH } from "../format";
 import { baseOptions, useChartColors } from "./chartTheme";
-import { INDICATORS, type IndicatorDef } from "./indicators";
+import { alpha, INDICATORS, type IndicatorDef } from "./indicators";
+import { calcVolumeProfile, VolumeProfilePrimitive, type VolumeProfile } from "./volumeProfile";
 
 export const INTERVAL_SECONDS: Record<string, number> = {
   "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400,
@@ -34,6 +35,10 @@ const loadEnabled = (): string[] => {
 
 /** 副圖每格佔整張圖的高度比例（圖表高度會跟著副圖數量加高，見 styles.css 的 .panes-N） */
 const PANE_H = [0, 0.17, 0.15, 0.135, 0.12];
+
+/** 成交量分佈圖的價格分桶數與價值區間比例 */
+const VP_ROWS = 60;
+const VP_VALUE_AREA = 0.7;
 
 const fmtVal = (v: number) => `${v < 0 ? "−" : ""}${fmtPrice(Math.abs(v))}`;
 const fmtVol = (v: number) => new Intl.NumberFormat("zh-TW", { notation: "compact", maximumFractionDigits: 2 }).format(v);
@@ -73,6 +78,8 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
   const [legend, setLegend] = useState<LegendItem[]>([]);
   const [indLast, setIndLast] = useState<Record<string, number>>({});
   const [indHover, setIndHover] = useState<Record<string, number> | null>(null);
+  const [vp, setVp] = useState<VolumeProfile | null>(null);
+  const vpRef = useRef<VolumeProfilePrimitive | null>(null);
   const subCount = INDICATORS.filter((d) => d.pane === "sub" && enabled.includes(d.id)).length;
 
   const klines = useQuery({
@@ -202,6 +209,39 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
     setIndLast(last);
   }, [enabled, colors, klines.data]);
 
+  // 成交量分佈圖：統計畫面上看得到的 K 棒，平移縮放時重算
+  const refreshProfile = () => {
+    const prim = vpRef.current;
+    const range = chartRef.current?.timeScale().getVisibleLogicalRange();
+    if (!prim || !range) return;
+    const candles = candlesRef.current;
+    const from = Math.max(0, Math.ceil(range.from));
+    const to = Math.min(candles.length - 1, Math.floor(range.to));
+    const p = to >= from ? calcVolumeProfile(candles.slice(from, to + 1), VP_ROWS, VP_VALUE_AREA) : null;
+    prim.setProfile(p);
+    setVp(p);
+  };
+  const vpOn = enabled.includes("vp");
+  useEffect(() => {
+    const chart = chartRef.current;
+    const main = seriesRef.current;
+    if (!chart || !main || !vpOn) return setVp(null);
+    const prim = new VolumeProfilePrimitive({
+      inside: alpha(colors.series1, 0.45), outside: alpha(colors.series1, 0.15),
+      poc: colors.serious, va: colors.text2, widthRatio: 0.25, showVahVal: true,
+    }, fmtPrice);
+    main.attachPrimitive(prim);
+    vpRef.current = prim;
+    refreshProfile();
+    const ts = chart.timeScale();
+    ts.subscribeVisibleLogicalRangeChange(refreshProfile);
+    return () => {
+      ts.unsubscribeVisibleLogicalRangeChange(refreshProfile);
+      main.detachPrimitive(prim);
+      vpRef.current = null;
+    };
+  }, [vpOn, colors, klines.data]);
+
   // 即時 K 棒進來時，重算指標並只更新最後一點
   const refreshIndicators = () => {
     const candles = candlesRef.current;
@@ -231,6 +271,7 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
     const k = candlesRef.current;
     candlesRef.current = k.at(-1)?.time === c.time ? [...k.slice(0, -1), c] : [...k, c];
     refreshIndicators();
+    refreshProfile();
     setTick(c);
   };
 
@@ -306,6 +347,7 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
           {INDICATORS.filter((d) => d.pane === "main").map((d) => (
             <button key={d.id} className={enabled.includes(d.id) ? "on" : ""} onClick={() => toggle(d.id)}>{d.label}</button>
           ))}
+          <button className={vpOn ? "on" : ""} onClick={() => toggle("vp")} title="成交量分佈圖（畫面上的 K 棒）">VP</button>
         </div>
         <div className="seg">
           {INDICATORS.filter((d) => d.pane === "sub").map((d) => (
@@ -325,6 +367,13 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
               <span>收 {fmtPrice(last.close)}</span>
               <span className={change >= 0 ? "up" : "down"}>{fmtSigned(change * 100)}%</span>
             </>
+          )}
+          {vp && (
+            <span className="ind">
+              <span style={{ color: colors.serious }}>POC {fmtPrice(vp.poc)}</span>
+              <span>VAH {fmtPrice(vp.vah)}</span>
+              <span>VAL {fmtPrice(vp.val)}</span>
+            </span>
           )}
           {legend.length > 0 && (
             <span className="ind">
@@ -348,6 +397,12 @@ export function CandleChart({ symbol, market, interval, onSelectBar }: Props) {
             {position.take_profit_price && <span style={{ color: colors.up }}><span className="swatch-line" /> 停利</span>}
             {position.liquidation_price && <span style={{ color: colors.warn }}><span className="swatch-line" style={{ borderTopStyle: "dotted" }} /> 強平</span>}
           </>
+        )}
+        {vp && (
+          <span>
+            <span style={{ color: colors.serious }}><span className="swatch-line" style={{ borderTopStyle: "solid" }} /> POC</span>
+            {" "}<span className="swatch-line" /> 價值區間 {VP_VALUE_AREA * 100}%（VAH／VAL）
+          </span>
         )}
         <span className="muted">{connected ? "● 即時推送" : "○ 連線中斷，每 5 秒更新"} · 點擊 K 棒查看該時段成交明細</span>
       </div>

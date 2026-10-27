@@ -99,7 +99,7 @@ function stdev(values: number[], mean: Series, n: number): Series {
 }
 
 /** 把 hex 色碼加上透明度（畫布不吃 color-mix）。 */
-const alpha = (hex: string, a: number) => (/^#[0-9a-f]{6}$/i.test(hex) ? hex + Math.round(a * 255).toString(16).padStart(2, "0") : hex);
+export const alpha = (hex: string, a: number) => (/^#[0-9a-f]{6}$/i.test(hex) ? hex + Math.round(a * 255).toString(16).padStart(2, "0") : hex);
 
 export interface Point { time: number; value: number; color?: string }
 
