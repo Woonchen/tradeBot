@@ -109,3 +109,47 @@ def test_kd_matches_hand_calculation_and_drives_rules():
     c = [Candle(i, x, x + 1, x - 1, x, 1) for i, x in enumerate(closes)]
     t = build_strategy("rules", {"rules": rules}).targets(c)
     assert "long" in t[20:35] and t[-1] == "flat"
+
+
+def test_volume_profile_matches_frontend_numbers():
+    from app.strategies.volume_profile import profile
+
+    # 跟前端 volumeProfile.ts 驗證時用的同一組 K 棒：POC 105.5、價值區 104–106
+    c = [Candle(1, 100, 110, 100, 105, 10), Candle(2, 105, 106, 104, 105, 100),
+         Candle(3, 105, 105, 105, 105, 5), Candle(4, 101, 102, 100, 101, 20)]
+    poc, vah, val = profile(c, 10, 0.7)
+    assert (poc, vah, val) == pytest.approx((105.5, 106, 104))
+    assert profile([Candle(1, 1, 1, 1, 1, 1)], 10, 0.7) is None  # 沒有波動
+
+
+def test_previous_week_vp_is_causal_and_needs_a_full_week():
+    from app.strategies.volume_profile import WEEK, period_start
+
+    monday = period_start(10 * WEEK, "week")
+    # 資料從上上週五開始：上上週不完整，所以上週的 K 棒沒有 VP；這週一起才有（用完整的上週）
+    start = monday - WEEK - 3 * 86400
+    px = lambda i: 100 + math.sin(i / 7) * 5  # noqa: E731
+    candles = [Candle(start + i * 14400, px(i), px(i) + 1, px(i) - 1, px(i), 1 + i % 5) for i in range(42 * 3)]
+    op = {"kind": "vp_poc", "period": "week", "rows": 30, "value_area": 70}
+    poc = compute(op, candles, {})
+    this_week = next(i for i, c in enumerate(candles) if c.time >= monday)
+    assert all(v is None for v in poc[:this_week])
+    assert poc[this_week] is not None and len(set(poc[this_week:this_week + 42])) == 1  # 整週用同一個值
+    assert poc[this_week + 42] != poc[this_week]  # 下週換成這週的分佈
+    # 只用已經結束的時段：後面的 K 棒不影響前面的值
+    assert compute(op, candles[:this_week + 5], {}) == poc[:this_week + 5]
+
+
+def test_vp_operand_in_rules():
+    VAH = {"kind": "vp_vah", "period": "day", "rows": 20, "value_area": 70}
+    day = 86400
+    # 第一天在 100 附近盤整，第二天往上突破
+    closes = [100 + (i % 3) for i in range(6)] + [101, 103, 106, 108, 110, 112]
+    c = [Candle(day + i * 14400, x, x + 0.5, x - 0.5, x, 10) for i, x in enumerate(closes)]
+    s = build_strategy("rules", rules(long_entry=[cond(CLOSE, ">", VAH)]))
+    t = s.targets(c)
+    assert t[:6] == ["flat"] * 6 and t[-1] == "long"
+    plots = s.plots(c)
+    assert plots[0]["name"].startswith("前日 VAH") and plots[0]["pane"] == "main"
+    with pytest.raises(ValueError):
+        build_strategy("rules", rules(long_entry=[cond(CLOSE, ">", {**VAH, "value_area": 99})]))

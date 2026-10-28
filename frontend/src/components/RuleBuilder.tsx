@@ -10,7 +10,8 @@ export type Operand =
   | { kind: "bb_upper" | "bb_middle" | "bb_lower"; length: number; mult: number }
   | { kind: "macd" | "macd_signal" | "macd_hist"; fast: number; slow: number; signal: number }
   | { kind: "kd_k" | "kd_d"; length: number }
-  | { kind: "fear_greed" | "funding_rate" | "long_short" };
+  | { kind: "fear_greed" | "funding_rate" | "long_short" }
+  | { kind: "vp_poc" | "vp_vah" | "vp_val"; period: "day" | "week"; rows: number; value_area: number };
 type Kind = Operand["kind"];
 type Cmp = ">" | "<" | ">=" | "<=" | "crosses_above" | "crosses_below";
 export interface Condition { left: Operand; cmp: Cmp; right: Operand }
@@ -42,7 +43,11 @@ const KINDS: { kind: Kind; label: string; group: string }[] = [
   { kind: "bb_middle", label: "布林中軌", group: "波動" },
   { kind: "bb_lower", label: "布林下軌", group: "波動" },
   { kind: "atr", label: "ATR", group: "波動" },
+  { kind: "vp_poc", label: "成交量分佈 POC（控制點）", group: "成交量分佈" },
+  { kind: "vp_vah", label: "成交量分佈 VAH（價值區上緣）", group: "成交量分佈" },
+  { kind: "vp_val", label: "成交量分佈 VAL（價值區下緣）", group: "成交量分佈" },
 ];
+const VP_PERIODS: ["week" | "day", string][] = [["week", "上週"], ["day", "前日"]];
 const SOURCES: [Source, string][] = [["close", "收盤價"], ["open", "開盤價"], ["high", "最高價"], ["low", "最低價"], ["volume", "成交量"]];
 const CMPS: [Cmp, string][] = [
   [">", "大於"], ["<", "小於"], [">=", "大於等於"], ["<=", "小於等於"], ["crosses_above", "向上穿越"], ["crosses_below", "向下穿越"],
@@ -64,6 +69,7 @@ function defaultOperand(kind: Kind): Operand {
     case "bb_upper": case "bb_middle": case "bb_lower": return { kind, length: 20, mult: 2 };
     case "kd_k": case "kd_d": return { kind, length: 9 };
     case "fear_greed": case "funding_rate": case "long_short": return { kind };
+    case "vp_poc": case "vp_vah": case "vp_val": return { kind, period: "week", rows: 60, value_area: 70 };
     default: return { kind, fast: 12, slow: 26, signal: 9 };
   }
 }
@@ -82,6 +88,8 @@ export function describeOperand(o: Operand): string {
     case "fear_greed": return "恐懼貪婪指數";
     case "funding_rate": return "資金費率(%)";
     case "long_short": return "散戶多空比";
+    case "vp_poc": case "vp_vah": case "vp_val":
+      return `${o.period === "week" ? "上週" : "前日"} ${o.kind.slice(3).toUpperCase()}(${o.rows} 行, ${o.value_area}%)`;
     default: return `${label}(${o.fast}, ${o.slow}, ${o.signal})`;
   }
 }
@@ -152,6 +160,24 @@ export const TEMPLATES: { name: string; description: string; rules: Rules }[] = 
     },
   },
   {
+    name: "4h 趨勢 + 上週 POC 濾網",
+    description: "收盤價在 SMA50、SMA200 和上週成交量分佈的 POC 之上、散戶多空比 ≤ 2 時做多；任一條件不成立就出場。"
+      + "建議 4h 週期。研究：比單純 SMA50/200 回撤小一些（C 期 43% → 39%），報酬差不多",
+    rules: {
+      long_entry: g("and",
+        cond(CLOSE, ">", { kind: "sma", length: 50, source: "close" }),
+        cond(CLOSE, ">", { kind: "sma", length: 200, source: "close" }),
+        cond({ kind: "long_short" }, "<=", val(2)),
+        cond(CLOSE, ">", { kind: "vp_poc", period: "week", rows: 60, value_area: 70 })),
+      long_exit: g("or",
+        cond(CLOSE, "<", { kind: "sma", length: 50, source: "close" }),
+        cond(CLOSE, "<", { kind: "sma", length: 200, source: "close" }),
+        cond({ kind: "long_short" }, ">", val(2)),
+        cond(CLOSE, "<", { kind: "vp_poc", period: "week", rows: 60, value_area: 70 })),
+      short_entry: empty(), short_exit: empty(), stop_loss_pct: 0, take_profit_pct: 0,
+    },
+  },
+  {
     name: "MACD 動能",
     description: "MACD 柱狀圖由負轉正做多，由正轉負出場",
     rules: {
@@ -178,7 +204,7 @@ function OperandEditor({ value, onChange }: { value: Operand; onChange: (o: Oper
   return (
     <span className="rb-operand">
       <select value={value.kind} onChange={(e) => onChange(defaultOperand(e.target.value as Kind))}>
-        {["價格", "趨勢", "動能", "波動", "情緒"].map((grp) => (
+        {["價格", "趨勢", "動能", "波動", "成交量分佈", "情緒"].map((grp) => (
           <optgroup key={grp} label={grp}>
             {KINDS.filter((k) => k.group === grp).map((k) => <option key={k.kind} value={k.kind}>{k.label}</option>)}
           </optgroup>
@@ -193,6 +219,15 @@ function OperandEditor({ value, onChange }: { value: Operand; onChange: (o: Oper
       )}
       {"length" in o && <Num label="長度" value={o.length} onChange={(v) => set({ length: v })} />}
       {"mult" in o && <Num label="倍數" value={o.mult} step={0.1} onChange={(v) => set({ mult: v })} />}
+      {"period" in o && (
+        <>
+          <select value={o.period} title="統計哪個時段（UTC；週從週一起算）" onChange={(e) => set({ period: e.target.value as "week" | "day" })}>
+            {VP_PERIODS.map(([p, l]) => <option key={p} value={p}>{l}</option>)}
+          </select>
+          <Num label="行數" value={o.rows} width={56} onChange={(v) => set({ rows: v })} />
+          <Num label="價值區 %" value={o.value_area} width={52} onChange={(v) => set({ value_area: v })} />
+        </>
+      )}
       {"fast" in o && (
         <>
           <Num label="快" value={o.fast} width={52} onChange={(v) => set({ fast: v })} />

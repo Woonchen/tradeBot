@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from .base import Candle, Param, Strategy, Target, plot, register
 from .external import EXTERNAL_KINDS, LAG, MAX_AGE, align
 from .indicators import atr, crossover, crossunder, ema, kd, rsi, sma
+from .volume_profile import previous_period_levels
 
 Source = Literal["open", "high", "low", "close", "volume"]
 
@@ -72,6 +73,15 @@ class External(_Op):
     kind: Literal["fear_greed", "funding_rate", "long_short"]
 
 
+class VolumeProfile(_Op):
+    """上一個交易時段（UTC 日／週一起算的週）成交量分佈的 POC、VAH、VAL。"""
+
+    kind: Literal["vp_poc", "vp_vah", "vp_val"]
+    period: Literal["day", "week"] = "week"
+    rows: int = Field(60, ge=10, le=300)
+    value_area: int = Field(70, ge=50, le=95)  # 價值區涵蓋的成交量 %
+
+
 class Macd(_Op):
     kind: Literal["macd", "macd_signal", "macd_hist"]
     fast: int = Field(12, ge=1, le=200)
@@ -86,7 +96,8 @@ class Macd(_Op):
 
 
 Operand = Annotated[
-    Union[Value, Price, MovingAverage, Rsi, Atr, Channel, Bollinger, Macd, Kd, External], Field(discriminator="kind")
+    Union[Value, Price, MovingAverage, Rsi, Atr, Channel, Bollinger, Macd, Kd, External, VolumeProfile],
+    Field(discriminator="kind"),
 ]
 Comparator = Literal[">", "<", ">=", "<=", "crosses_above", "crosses_below"]
 
@@ -193,6 +204,13 @@ def compute(op: dict, candles: list[Candle], cache: dict) -> list[float | None]:
     elif k in EXTERNAL_KINDS:
         # 由策略執行／回測事先載入（strategy.ext）；沒有資料時整段都是 None，條件不成立
         out = align(cache.get("__ext__", {}).get(k, []), candles, LAG.get(k, 0), MAX_AGE.get(k))
+    elif k.startswith("vp_"):
+        # 三個價位一起算、一起快取
+        vkey = ("__vp__", op["period"], op["rows"], op["value_area"])
+        if vkey not in cache:
+            cache[vkey] = previous_period_levels(candles, op["period"], op["rows"], op["value_area"] / 100)
+        j = {"vp_poc": 0, "vp_vah": 1, "vp_val": 2}[k]
+        out = [None if lv is None else lv[j] for lv in cache[vkey]]
     elif k in ("kd_k", "kd_d"):
         kk, dd = kd(col("high"), col("low"), col("close"), op["length"])
         out = kk if k == "kd_k" else dd
@@ -239,11 +257,13 @@ def _max_length(op: dict) -> int:
     k = op["kind"]
     if k.startswith("macd"):
         return op["slow"] + op["signal"]
+    if k.startswith("vp_"):
+        return 150  # 暖身上限 1500 根：週線 VP 在 15m 以上的週期才抓得到完整的上一週
     return int(op.get("length", 1))
 
 
 # 回測圖：價格尺度的指標疊在 K 線上，其他畫在副圖（同一類同一格）
-_ON_PRICE = {"sma", "ema", "bb_upper", "bb_middle", "bb_lower", "highest", "lowest"}
+_ON_PRICE = {"sma", "ema", "bb_upper", "bb_middle", "bb_lower", "highest", "lowest", "vp_poc", "vp_vah", "vp_val"}
 _SUB_GROUP = {
     "rsi": "RSI", "kd_k": "KD", "kd_d": "KD", "macd": "MACD", "macd_signal": "MACD", "macd_hist": "MACD",
     "atr": "ATR", "fear_greed": "恐懼貪婪指數", "funding_rate": "資金費率 %", "long_short": "散戶多空比",
@@ -266,6 +286,8 @@ def _name(op: dict) -> str:
         return f"{'K' if k == 'kd_k' else 'D'}{op['length']}"
     if k.startswith("macd"):
         return f"{_ZH[k]}（{op['fast']}, {op['slow']}, {op['signal']}）"
+    if k.startswith("vp_"):
+        return f"{'上週' if op['period'] == 'week' else '前日'} {k[3:].upper()}（{op['rows']} 行, {op['value_area']}%）"
     return _ZH.get(k, k)
 
 
