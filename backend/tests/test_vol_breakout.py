@@ -60,3 +60,17 @@ def test_causal_and_explain():
 def test_needs_an_exit():
     with pytest.raises(ValueError, match="出場"):
         build_strategy("vol_breakout", {**P, "hold_bars": 0, "trail_atr": 0})
+
+
+def test_vol_dip_buys_big_red_candles_and_exits_on_time():
+    D = {"body_atr": 3.0, "vol_mult": 2.0, "vol_len": 20, "atr_len": 14, "trend_len": 0, "hold_bars": 8, "trail_atr": 0}
+    c = flat_then({250: (-5.0, 50.0)})
+    t = build_strategy("vol_dip", D).targets(c)
+    assert t[249] == "flat" and t[250] == "long" and t[257] == "long" and t[258] == "flat"
+    # 大陽線不會觸發、量不夠也不會
+    assert "long" not in build_strategy("vol_dip", D).targets(flat_then({250: (5.0, 50.0)}))
+    assert "long" not in build_strategy("vol_dip", D).targets(flat_then({250: (-5.0, 15.0)}))
+    # 動能突破反過來：大陰線不觸發
+    assert "long" not in build_strategy("vol_breakout", {**P, "trend_len": 0}).targets(c)
+    ex = build_strategy("vol_dip", D).explain(c[:251])
+    assert ex["groups"]["long_entry"]["conditions"][0]["left"] == "K 棒實體（開盤 − 收盤）"

@@ -50,14 +50,17 @@ class VolumeBreakout(Strategy):
             "trend": sma(closes, p["trend_len"]) if p["trend_len"] else [None] * n,
         }
 
+    # 1：大陽線（收盤 − 開盤）；-1：大陰線（開盤 − 收盤），見 VolumeDip
+    direction = 1
+
     def _entry_checks(self, c: Candle, x: dict, i: int) -> list[tuple[str, float | None, str, float | None, bool]]:
         p = self.p
-        body = c.close - c.open
+        body = (c.close - c.open) * self.direction
         pa, pv, tr = x["prev_atr"][i], x["prev_vma"][i], x["trend"][i]
         need_body = None if pa is None else p["body_atr"] * pa
         need_vol = None if pv is None else p["vol_mult"] * pv
         rows = [
-            ("K 棒實體（收盤 − 開盤）", body, f"{p['body_atr']:g} × 前一根 ATR{p['atr_len']}", need_body,
+            ("K 棒實體（收盤 − 開盤）" if self.direction == 1 else "K 棒實體（開盤 − 收盤）", body, f"{p['body_atr']:g} × 前一根 ATR{p['atr_len']}", need_body,
              need_body is not None and body > need_body),
             ("成交量", c.volume, f"{p['vol_mult']:g} × 前 {p['vol_len']} 根平均量", need_vol,
              need_vol is not None and c.volume > need_vol),
@@ -122,3 +125,29 @@ class VolumeBreakout(Strategy):
                               "right_value": stop, "ok": c.close < stop, "price_scale": True})
             groups["long_exit"] = {"logic": "or", "met": any(r["ok"] for r in exits), "conditions": exits}
         return {"bar_time": c.time, "groups": groups}
+
+
+@register
+class VolumeDip(VolumeBreakout):
+    key = "vol_dip"
+    label = "急跌買進：大陰線＋爆量（只做多，短線反彈）"
+    description = (
+        "一根 K 棒的實體（開盤 − 收盤）大於前一根 ATR 的幾倍、成交量大於前 N 根平均的幾倍時買進，賭短線反彈；"
+        "持有固定根數後出場。研究：15m、實體 > 3 倍 ATR、持有 2～4 小時，2020–2024 年小賺，"
+        "但 2024-07 之後每年虧 20% 以上（反彈幅度跟手續費差不多）。只建議用影子模式觀察。"
+    )
+    direction = -1
+    params = [
+        Param("body_atr", "實體至少幾倍 ATR", "float", 3.0, min=0.5, max=10, step=0.1,
+              help="開盤 − 收盤 > 這個倍數 × 前一根的 ATR"),
+        Param("vol_mult", "成交量至少幾倍平均", "float", 2.0, min=1, max=20, step=0.1,
+              help="這根的成交量 > 這個倍數 × 前 N 根（不含這根）的平均成交量"),
+        Param("vol_len", "平均成交量長度", "int", 20, min=2, max=200),
+        Param("atr_len", "ATR 長度", "int", 14, min=2, max=200),
+        Param("trend_len", "趨勢過濾 SMA 長度", "int", 0, min=0, max=5000,
+              help="收盤價高於這條 SMA 才進場；0 = 不過濾（研究裡不過濾比較好）"),
+        Param("hold_bars", "持有幾根後出場", "int", 8, min=0, max=1000,
+              help="進場後第幾根收盤時出場（15m 的 8 根 = 2 小時）；0 = 不用時間出場"),
+        Param("trail_atr", "追蹤停損（幾倍 ATR）", "float", 0.0, min=0, max=50, step=0.5,
+              help="收盤價比持倉期間最高收盤低這麼多倍 ATR 就出場；0 = 不用"),
+    ]
